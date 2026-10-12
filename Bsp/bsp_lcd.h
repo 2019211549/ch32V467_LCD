@@ -95,8 +95,31 @@ uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len);
 void bsp_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
 
 /* 连续写 count 个 RGB565 像素（高字节在前）。
- * 轮询发送；将来 LVGL 的 DMA flush 就替换这个函数的内部实现，接口不变 */
+ * 像素流走 SPI1 TX DMA（DMA1_Channel3）；检查点 A 为轮询等待完成的阻塞
+ * 语义，接口与 CPU 版完全一致。检查点 B 将增加异步版本 */
 void bsp_lcd_write_pixels(const uint16_t *pixels, uint32_t count);
+
+/* DMA 传输统计（诊断）：三参均可传 NULL 忽略。
+ * 正常运行判据：start == done 且 err == 0 */
+void bsp_lcd_dma_stats(uint32_t *start, uint32_t *done, uint32_t *err);
+
+/* ==================== 检查点 B：DMA 异步 ==================== */
+/* DMA 完成回调原型（在 ISR 上下文执行：禁止打印/动态分配/阻塞） */
+typedef void (*bsp_lcd_dma_cb_t)(void);
+
+/* 异步启动像素流（窗口命令仍同步发）。返回 0 = DMA 在飞，完成经回调通知；
+ * 返回 1 = 条件不满足（超 32768 像素或地址未半字对齐）已走同步路径发完，
+ * 调用方需自行处理完成通知（LVGL 场景即补 lv_display_flush_ready） */
+int bsp_lcd_write_pixels_async(const uint16_t *pixels, uint32_t count);
+
+/* 开启 DMA 传输完成中断并注册回调（一次性，bsp_lvgl_port_init 里调） */
+void bsp_lcd_dma_async_enable(bsp_lcd_dma_cb_t cb);
+
+/* DMA1_Channel3 中断服务体（ch32v4x7_it.c 的 ISR 调它，别处别调） */
+void bsp_lcd_dma_irq_handler(void);
+
+/* 强制收总线（异常/超时兜底）：禁通道 + 收尾 + err 计数 */
+void bsp_lcd_dma_recover(void);
 
 /* 用纯色填充一块区域 */
 void bsp_lcd_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color);

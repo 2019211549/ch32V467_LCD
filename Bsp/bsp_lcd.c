@@ -26,12 +26,13 @@
 #define CMD_DISPON      0x29
 
 /* 写屏 SPI 速度（唯一调频旋钮，改这一行即可整体切换）：
- * PCLK2=200MHz。已试档位：/32=6.25MHz（基线 PASS，点屏目视通过）、
- * /2=100MHz（实验极限，从未目视确认过；GPIO 档位仅 50MHz 级属超规格）。
- * 2026-10-12 屏幕点不亮，按调参点 1 先降回 /32 排除速率因素。
+ * PCLK2=200MHz。已试档位：/32=6.25MHz（基线 PASS + 2026-10-12 LVGL 全链路
+ * 目视 PASS）、/2=100MHz（硬件分频极限；GPIO 档位仅 50MHz 级属超规格使用，
+ * 2026-10-12 渲染链路修通后恢复，借 LVGL Hello 做目视确认——若出现花屏/
+撕裂/错位逐级降 /4(50M)、/8(25M) 定位信号完整性）。
  * 注意：改这里须同步 test_lcd_perf.c 的 PERF_SCK_HZ。
  * init / 自环测试 / 读回恢复 三处同源引用，保证写速度一致 */
-#define LCD_SPI_WRITE_PRESCALER   SPI_BaudRatePrescaler_32
+#define LCD_SPI_WRITE_PRESCALER   SPI_BaudRatePrescaler_2
 
 /* ---------- 10.1 底层原语寄存器化（性能优化第一步） ----------
  * GPIO 库函数（函数调用+参数检查，约 20~40 周期）换成 BSHR/BCR 单条
@@ -43,6 +44,10 @@
 #define LCD_DC_HIGH()   (LCD_DC_PORT->BSHR = LCD_DC_PIN)    /* DC=数据 */
 #define LCD_RST_LOW()   (LCD_RST_PORT->BCR  = LCD_RST_PIN)  /* 复位拉低 */
 #define LCD_RST_HIGH()  (LCD_RST_PORT->BSHR = LCD_RST_PIN)  /* 复位释放 */
+
+/* §11 DMA 引擎（实现在文件后部）：前置声明供前面的对外 API 入口防御使用 */
+static void lcd_dma_init(void);
+static void lcd_dma_sync(void);
 
 /*********************************************************************
  *                      SPI1 / GPIO 底层原语
@@ -202,6 +207,8 @@ void bsp_lcd_set_rotation(uint8_t rotation)
         return;
     }
 
+    lcd_dma_sync();                     /* §11 入口防御：等 DMA 像素流收尾再动总线 */
+
     lcd_rotation = rotation;
     lcd_write_cmd(CMD_MADCTL);
     lcd_write_data1(rot_madctl[rotation]);
@@ -250,6 +257,8 @@ int bsp_lcd_spi_loopback(void)
     uint32_t i;
     int bad = 0;
 
+    lcd_dma_sync();                     /* §11 入口防御：自环要重配 SPI，先等 DMA 收尾 */
+
     spi1_reconfig(LCD_SPI_WRITE_PRESCALER);        /* 与写屏同速 */
     (void)SPI_I2S_ReceiveData(SPI1);               /* 清掉可能残留的 RX */
 
@@ -275,6 +284,8 @@ uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len)
     {
         return 0;
     }
+
+    lcd_dma_sync();                     /* §11 入口防御：读回要降速重配，先等 DMA 收尾 */
 
     /* 读回时序裕量小，降到 /128 = 1.5625MHz，读完恢复写速度 */
     spi1_reconfig(SPI_BaudRatePrescaler_128);
@@ -325,12 +336,17 @@ void bsp_lcd_init(void)
     lcd_write_cmd(CMD_DISPON);                      /* 开显示 */
     lcd_delay_ms(50);
 
+    lcd_dma_init();                                 /* §11：DMA 通道一次配置（SPI 请求源打开，
+                                                    * 通道 EN=0 不会自己动，CPU 直写不受影响） */
+
     /* 背光由外部恒流源直接驱动 LEDA/LEDK，软件无步骤（摘要 §7） */
 }
 
 void bsp_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t buf[4];
+
+    lcd_dma_sync();                     /* §11 入口防御：新窗口命令不能打断在飞像素流 */
 
     lcd_write_cmd(CMD_CASET);                       /* 列地址 X */
     buf[0] = (uint8_t)(x0 >> 8);
@@ -416,27 +432,240 @@ static void spi1_send_half(uint16_t h)
     SPI1->DATAR = h;
 }
 
+/* ---------- 11. SPI1 TX DMA（DMA1_Channel3）像素流 ----------
+ * 检查点 A：轮询同步语义。write_pixels 启动 DMA 后原地等 TC，对外接口与
+ * CPU 轮询版完全一致（阻塞直到像素全部上线、总线收尾）。
+ * DMA 与 16bit SPI 帧直接衔接：半字内存 -> DATAR，MSB first 线序与 CPU
+ * 版逐位相同，面板无感知。通道映射依据 WCH EVT 例程 SPI_DMA：
+ * SPI1_TX = DMA1_Channel3（RX 是 Channel2），时钟挂在 RCC_HBPeriph_DMA1。 */
+#define LCD_DMA_CH          DMA1_Channel3
+#define LCD_DMA_TC_TIMEOUT  1000000UL     /* 轮询超时环数（百 ms 量级） */
+
+static volatile uint8_t s_dma_inflight;   /* start 置 1，收尾清 0 */
+static uint32_t s_dma_start_cnt, s_dma_done_cnt, s_dma_err_cnt;
+
+/* DMA 时钟 + 通道配置（bsp_lcd_init 尾部调一次）：
+ * 半字/半字、MINC 开、PINC 关、Normal 模式、高优先级、外设口 SPI1->DATAR */
+static void lcd_dma_init(void)
+{
+    DMA_InitTypeDef d = {0};
+
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+
+    DMA_DeInit(LCD_DMA_CH);
+    d.DMA_PeripheralBaseAddr = (uint32_t)&SPI1->DATAR;
+    d.DMA_MemoryBaseAddr     = 0;
+    d.DMA_DIR                = DMA_DIR_PeripheralDST;
+    d.DMA_BufferSize         = 0;
+    d.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
+    d.DMA_MemoryInc          = DMA_MemoryInc_Enable;
+    d.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
+    d.DMA_MemoryDataSize     = DMA_MemoryDataSize_HalfWord;
+    d.DMA_Mode               = DMA_Mode_Normal;
+    d.DMA_Priority           = DMA_Priority_High;
+    d.DMA_M2M                = DMA_M2M_Disable;
+    DMA_Init(LCD_DMA_CH, &d);
+
+    /* 打开 SPI 的 DMA 请求源（通道 EN=0 时不产生请求，CPU 直写不受影响） */
+    SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, ENABLE);
+}
+
+/* 启动一次传输。gdb 实测（CFGR3 读数）：WCH 的 Normal 模式传完 CNTR 归零，
+ * 但 EN 位不自动清（与 STM32F1 手册描述不同）。本引擎每次启动前总是先禁
+ * 通道再改写 CNTR/MADDR，两种行为下都安全 */
+static void lcd_dma_start(const uint16_t *px, uint16_t n)
+{
+    DMA_Cmd(LCD_DMA_CH, DISABLE);
+    LCD_DMA_CH->MADDR = (uint32_t)px;
+    LCD_DMA_CH->CNTR  = n;
+    DMA_ClearFlag(DMA1_FLAG_GL3);          /* 清残留标志，防上次 TC 误判 */
+    s_dma_inflight = 1;
+    s_dma_start_cnt++;
+    DMA_Cmd(LCD_DMA_CH, ENABLE);
+}
+
+/* 总线收尾（完成/出错/超时共用）：等移位寄存器真正空 -> 释放 CS -> DFF 回 8bit */
+static void lcd_dma_bus_epilogue(void)
+{
+    spi1_wait_idle();
+    LCD_CS_HIGH();
+    spi1_datasize_8();
+    s_dma_inflight = 0;
+    s_dma_done_cnt++;
+}
+
+/* 轮询等 TC，有界防挂死；TE 或超时返回 1（调用方负责收尾） */
+static int lcd_dma_wait_tc(void)
+{
+    uint32_t guard = LCD_DMA_TC_TIMEOUT;
+
+    while (DMA_GetFlagStatus(DMA1_FLAG_TC3) == RESET)
+    {
+        if (DMA_GetFlagStatus(DMA1_FLAG_TE3) != RESET)
+        {
+            s_dma_err_cnt++;
+            DMA_Cmd(LCD_DMA_CH, DISABLE);
+            return 1;
+        }
+        if (--guard == 0)
+        {
+            s_dma_err_cnt++;
+            DMA_Cmd(LCD_DMA_CH, DISABLE);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 入口防御：若有在飞传输（异常路径遗留），有界等它结束；超时强停并收尾 */
+static void lcd_dma_sync(void)
+{
+    uint32_t guard = LCD_DMA_TC_TIMEOUT * 2;
+
+    while (s_dma_inflight)
+    {
+        if (--guard == 0)
+        {
+            DMA_Cmd(LCD_DMA_CH, DISABLE);
+            lcd_dma_bus_epilogue();
+            break;
+        }
+    }
+}
+
+/* DMA 传输统计（诊断用）：三参均可传 NULL 忽略。
+ * 正常运行判据：start == done 且 err == 0 */
+void bsp_lcd_dma_stats(uint32_t *start, uint32_t *done, uint32_t *err)
+{
+    if (start != 0)
+    {
+        *start = s_dma_start_cnt;
+    }
+    if (done != 0)
+    {
+        *done = s_dma_done_cnt;
+    }
+    if (err != 0)
+    {
+        *err = s_dma_err_cnt;
+    }
+}
+
+/* ---------- 11.5 异步 DMA（检查点 B） ----------
+ * TCIE + PFIC 开启后，传输完成由 DMA1_Channel3_IRQHandler 收尾：
+ * 清标志 -> 总线收尾 -> 回调（回调里给信号量，任务端阻塞等待，CPU 让出）。
+ * 开启后 write_pixels 的同步语义仍保留（改等 ISR 收尾而非轮询 TC 标志），
+ * 作为 write_pixels_async 的回退路径继续可用 */
+static bsp_lcd_dma_cb_t s_dma_cb;       /* TC 收尾回调，ISR 上下文执行 */
+static uint8_t s_dma_irq_mode;          /* 1 = 中断模式已开启 */
+
+/* DMA1_Channel3 的中断服务体（User/ch32v4x7_it.c 的 ISR 只调这一个）。
+ * 规矩：不打印、不动态分配、不调任何会阻塞的东西 */
+void bsp_lcd_dma_irq_handler(void)
+{
+    DMA_ClearITPendingBit(DMA1_IT_GL3);
+    lcd_dma_bus_epilogue();
+    if (s_dma_cb != 0)
+    {
+        s_dma_cb();
+    }
+}
+
+/* 使能 DMA 完成中断并注册回调（整个工程只调一次，bsp_lvgl_port_init 里） */
+void bsp_lcd_dma_async_enable(bsp_lcd_dma_cb_t cb)
+{
+    lcd_dma_sync();
+    s_dma_cb = cb;
+    DMA_ClearFlag(DMA1_FLAG_GL3);
+    DMA_ITConfig(LCD_DMA_CH, DMA_IT_TC, ENABLE);     /* 全工程唯一开 TCIE 的地方 */
+    NVIC_SetPriority(DMA1_Channel3_IRQn, 0x40);      /* 4 位优先级取 4，中等 */
+    NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+    s_dma_irq_mode = 1;
+}
+
+/* 异常/超时兜底：强停通道并收总线（err 计数），供等待超时路径调用 */
+void bsp_lcd_dma_recover(void)
+{
+    DMA_Cmd(LCD_DMA_CH, DISABLE);
+    s_dma_err_cnt++;
+    lcd_dma_bus_epilogue();
+}
+
+/* 异步启动像素流：返回时 DMA 在飞、总线未收尾（收尾在中断里做）。
+ * 返回 0 = 已异步启动，完成经 async_enable 注册的回调通知；
+ * 返回 1 = 条件不满足走了同步路径（返回时已发完收完），调用方需自行
+ *   处理"完成"通知 —— LVGL 场景即补一次 lv_display_flush_ready。
+ * 异步条件：count<=32768（不分块）且地址半字对齐（DMA 半字传输要求） */
+int bsp_lcd_write_pixels_async(const uint16_t *pixels, uint32_t count)
+{
+    if ((count == 0) || (count > 32768) || (((uint32_t)pixels & 1u) != 0))
+    {
+        bsp_lcd_write_pixels(pixels, count);         /* 同步回退（含全部收尾） */
+        return 1;
+    }
+
+    lcd_dma_sync();                     /* 防御：等上一次（若有）收尾 */
+    LCD_DC_HIGH();
+    LCD_CS_LOW();
+    spi1_datasize_16();                 /* 像素流 16bit（与同步版一致） */
+
+    lcd_dma_start(pixels, (uint16_t)count);   /* inflight 先置 1 再使能通道 */
+    return 0;
+}
+
 void bsp_lcd_write_pixels(const uint16_t *pixels, uint32_t count)
 {
-    uint32_t i;
+    lcd_dma_sync();                     /* 入口防御：等残留传输收尾 */
 
     LCD_DC_HIGH();
     LCD_CS_LOW();
-    spi1_datasize_16();                /* 像素流切 16bit（同 fill 的 10.3）：
-                                        * 像素值整体写入 DATAR，MSB first 高字节
-                                        * 先上线，与两个 8bit 帧的线序一致 */
-    for (i = 0; i < count; i++)
+    spi1_datasize_16();                 /* 像素流切 16bit：DMA 半字直接对应
+                                         * 一个完整 RGB565 帧，线序与 CPU 版一致 */
+
+    while (count != 0)
     {
-        spi1_send_half(pixels[i]);
+        uint16_t chunk = (count > 32768) ? 32768 : (uint16_t)count;
+        /* CNTR 16 位上限 65535，此处分块纯接口健壮性；
+         * 实际 LVGL 块 <=320*24=7680 半字，永远一块传完 */
+
+        lcd_dma_start(pixels, chunk);
+        if (s_dma_irq_mode)
+        {
+            /* 中断模式：TC 标志会被 ISR 抢先清掉，不能轮询——等 ISR 的
+             * epilogue 清 s_dma_inflight（本函数只在任务/主线程上下文跑） */
+            uint32_t guard = LCD_DMA_TC_TIMEOUT * 2;
+
+            while (s_dma_inflight)
+            {
+                if (--guard == 0)
+                {
+                    s_dma_err_cnt++;
+                    DMA_Cmd(LCD_DMA_CH, DISABLE);    /* 中断丢失：放弃剩余块 */
+                    break;
+                }
+            }
+            if (guard == 0)
+            {
+                break;
+            }
+        }
+        else if (lcd_dma_wait_tc() != 0)
+        {
+            break;                      /* 出错/超时：错误已计数，放弃剩余块 */
+        }
+        pixels += chunk;
+        count -= chunk;
     }
-    lcd_window_end();                  /* wait_idle 后释放 CS（时序同 fill）*/
-    spi1_datasize_8();                 /* 切回 8bit 供下一次窗口命令 */
+
+    lcd_dma_bus_epilogue();
 }
 
 void bsp_lcd_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color)
 {
     uint32_t total = (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
     uint32_t  i;
+
+    lcd_dma_sync();                     /* §11 入口防御：fill 仍走 CPU 轮询，先等 DMA 收尾 */
 
     lcd_window_begin(x0, y0, x1, y1);  //写入的窗口（整段一个 CS 周期，8bit 命令）
     spi1_datasize_16();                //像素流切 16bit：一次发一个完整 RGB565

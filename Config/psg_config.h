@@ -32,7 +32,7 @@
 #define PSG_MODE_UNIT_TEST      1
 #define PSG_MODE_INTEGRATION    2
 
-#define PSG_MODE                PSG_MODE_UNIT_TEST
+#define PSG_MODE                PSG_MODE_APP       /* 检查点 B 上板验证：task_ui 异步 DMA 模式 */
 
 /* 测试框架总使能 = 是否处于单元测试模式（不要直接改这个） */
 #define PSG_TEST_ENABLE         (PSG_MODE == PSG_MODE_UNIT_TEST)

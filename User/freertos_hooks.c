@@ -13,6 +13,7 @@
 *********************************************************************************/
 
 #include "freertos_hooks.h"
+#include "bsp_uart.h"
 
 #if( configSUPPORT_STATIC_ALLOCATION == 1 )
 
@@ -57,3 +58,18 @@ void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer,
 #endif /* configUSE_TIMERS */
 
 #endif /* configSUPPORT_STATIC_ALLOCATION */
+
+/*********************************************************************
+ * 栈溢出钩子（configCHECK_FOR_STACK_OVERFLOW = 2 时由内核调用）
+ * 方法 2 = 任务栈尾画"脏图案"，上下文切换时校验；溢出刚发生就能抓到，
+ * 比溢出后踩坏堆 → 无声 HardFault 复位循环好定位得多。
+ * 注意：钩子被调用时那个任务的状态已不可信，打印后挂起等人工看。
+ *********************************************************************/
+#if( configCHECK_FOR_STACK_OVERFLOW >= 1 )
+void vApplicationStackOverflowHook( TaskHandle_t xTask, char *pcTaskName )
+{
+    (void)xTask;
+    uart_printf("[STACK OVFL] task=%s\r\n", pcTaskName);
+    while (1) { }
+}
+#endif

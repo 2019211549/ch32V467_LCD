@@ -35,7 +35,7 @@ void test_lvgl_hello(void)
     /* 2. 业务层：这就是以后写 UI 的全部套路 —— 建控件、设内容、摆位置 */
     lv_obj_t *label = lv_label_create(lv_screen_active());  //第一次创建display时就自动内部创建了一个screen
     TEST_ASSERT(label != NULL);
-    lv_label_set_text(label, "Hello LVGL!");  //对控件进行设置
+    lv_label_set_text(label, "Hello LVGL11!");  //对控件进行设置
     lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), 0); /* 纯红=颜色诊断 */
     lv_obj_center(label);                                          /* 屏幕居中 */
 
@@ -48,6 +48,15 @@ void test_lvgl_hello(void)
 
     /* label 建出来且至少下发过 1 块，链路即通 */
     TEST_ASSERT(bsp_lvgl_port_flush_cnt() > blk0);
+
+    /* DMA 像素流统计（检查点 A）：正常判据 start==done 且 err==0 */
+    {
+        uint32_t ds = 0, dd = 0, de = 0;
+
+        bsp_lcd_dma_stats(&ds, &dd, &de);
+        uart_printf("  DMA 像素流: start=%lu done=%lu err=%lu\r\n",
+                    (unsigned long)ds, (unsigned long)dd, (unsigned long)de);
+    }
 }
 
 #endif /* PSG_TEST_LVGL_HELLO */
