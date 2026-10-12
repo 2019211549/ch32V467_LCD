@@ -48,12 +48,14 @@ static void judge_task(void *arg)
     TEST_ASSERT(flush >= 10);           /* 至少刷满一整帧 */
     TEST_ASSERT_EQ_INT(start, done);    /* DMA 每笔都有始有终（没卡在半路） */
     TEST_ASSERT_EQ_INT(err, 0);         /* 无超时、无强制恢复 */
+    TEST_ASSERT_EQ_INT(bsp_lcd_dma_fallback_cnt(), 0);  /* 不变量：始终走异步，一次没降级过 */
 
-    uart_printf("[%s] test_task_ui(judge@6s): flush=%lu dma %lu/%lu err=%lu\r\n",
+    uart_printf("[%s] test_task_ui(judge@6s): flush=%lu dma %lu/%lu err=%lu fb=%lu\r\n",
                 (test_fail_cnt == fail0) ? " OK " : "FAIL",
                 (unsigned long)flush,
                 (unsigned long)start, (unsigned long)done,
-                (unsigned long)err);
+                (unsigned long)err,
+                (unsigned long)bsp_lcd_dma_fallback_cnt());
 
     vTaskDelete(NULL);                  /* 裁判退场，别占调度表 */
 }

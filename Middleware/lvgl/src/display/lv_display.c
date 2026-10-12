@@ -619,7 +619,7 @@ void lv_display_set_flush_wait_cb(lv_display_t * disp, lv_display_flush_wait_cb_
     }
     LV_CHECK_ARG(disp != NULL, return);
 
-    disp->flush_wait_cb = wait_cb;
+    disp->flush_wait_cb = wait_cb;  //将回调函数传入到disp中的回调函数参数中
 }
 
 void lv_display_set_sync_cb(lv_display_t * disp, lv_display_sync_cb_t sync_cb)

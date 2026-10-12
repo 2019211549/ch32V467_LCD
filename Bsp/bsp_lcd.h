@@ -103,6 +103,10 @@ void bsp_lcd_write_pixels(const uint16_t *pixels, uint32_t count);
  * 正常运行判据：start == done 且 err == 0 */
 void bsp_lcd_dma_stats(uint32_t *start, uint32_t *done, uint32_t *err);
 
+/* 异步入口降级同步的累计次数：恒 0 = "永远在走异步"这个不变量成立
+ * （触发条件与何时可能动，见 bsp_lcd.c 里 getter 的注释） */
+uint32_t bsp_lcd_dma_fallback_cnt(void);
+
 /* ==================== 检查点 B：DMA 异步 ==================== */
 /* DMA 完成回调原型（在 ISR 上下文执行：禁止打印/动态分配/阻塞） */
 typedef void (*bsp_lcd_dma_cb_t)(void);

@@ -43,7 +43,7 @@ static void dma_give_from_isr(void)
 {
     BaseType_t woken = pdFALSE;
 
-    xSemaphoreGiveFromISR(s_flush_sem, &woken);
+    xSemaphoreGiveFromISR(s_flush_sem, &woken);  //在 ISR 中释放信号量
     portYIELD_FROM_ISR(woken);              /* 若唤醒了更高优先级任务立刻切 */
 }
 
@@ -81,8 +81,19 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
             s_flush_cnt++; //统计回调次数
             return;        /* 异步正常路径：不调 flush_ready，完成通知全权由 wait_cb 机制给出 */
         }
-        /* 异步入口拒收（奇地址/超大块）——内部已同步发完，立即 ready，
-         * 否则 wait_cb 会白等一次 200ms 超时（没人 give 信号量） */
+
+        /* 降级路径（拒收：奇地址/超大块）——两件必须的事：
+         * 1. write_pixels_async 内部已同步发完，这里【绝不能再发一遍】
+         *    （旧版 bug：fall through 到下面的同步发送 = 同一块像素发两遍）
+         * 2. 排空信号量：同步发完期间 ISR 每笔照常 give 了一个"陈旧令牌"，
+         *    不排空的话下一块 wait_cb 会立即吃到旧令牌、提前放行 —— 而
+         *    那时新 DMA 还在读画布，CPU 就开始往上画下一块 = 撕裂 */
+        while (xSemaphoreTake(s_flush_sem, 0) == pdTRUE) { }
+
+        s_flush_cnt++; //统计回调次数
+
+        lv_display_flush_ready(disp);
+        return;
     }
 
     /* 同步档（检查点 A 语义）：发完才返回，画布立即可以复用 */
@@ -133,8 +144,9 @@ void bsp_lvgl_port_async_enable(void)
     /* 检查点 B 三件套：静态二值信号量 + DMA 完成中断 + LVGL 等待钩子。
      * 之后 flush_cb 走 write_pixels_async（启动 DMA 即返回），LVGL 复用
      * 画布前阻塞在信号量上等 DMA 完成中断（flush_wait_cb） */
-    s_flush_sem = xSemaphoreCreateBinaryStatic(&s_flush_sem_obj);
-    bsp_lcd_dma_async_enable(dma_give_from_isr);
+    s_flush_sem = xSemaphoreCreateBinaryStatic(&s_flush_sem_obj); //创建了一个二值信号量 //这个函数把 s_flush_sem_obj 这块裸内存，变成了一个能用的信号量，并把它的地址赋给了 s_flush_sem。
+
+    bsp_lcd_dma_async_enable(dma_give_from_isr); //打开 LCD 的 DMA 异步通道
     lv_display_set_flush_wait_cb(s_disp, flush_wait_cb);
     s_async_flush = 1;
 }

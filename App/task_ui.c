@@ -69,10 +69,11 @@ void task_ui(void *arg)
             bsp_lcd_dma_stats(&ds, &dd, &de);
             /* 栈水位 = 历史最小剩余（字）：改控件/换字体后重看这个数，
              * 余量 < 1/3 就该加栈 —— 量，别猜（2KB 溢出的教训） */
-            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu stk_free=%lu w\r\n",
+            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu fb=%lu stk_free=%lu w\r\n",
                         (unsigned long)bsp_lvgl_port_flush_cnt(),
                         (unsigned long)ds, (unsigned long)dd,
                         (unsigned long)de,
+                        (unsigned long)bsp_lcd_dma_fallback_cnt(),
                         (unsigned long)uxTaskGetStackHighWaterMark(NULL));
             last_stat = xTaskGetTickCount();
         }
