@@ -10,9 +10,6 @@
 #include "task.h"
 #include "psg_config.h"
 #include "app_main.h"
-#if !PSG_TEST_ENABLE
-#include "task_ui.h"      /* APP 模式才有 UI 任务（单元测试模式 LVGL 由用例自跑） */
-#endif
 
 /*********************************************************************
  * 任务1：低优先级，每 1s 打印一次计数
@@ -66,14 +63,9 @@ void app_main(void)
     {
         uart_printf("create Task2 failed\r\n");
     }
-#if !PSG_TEST_ENABLE
-    /* UI 任务优先级 3 最高：刷屏时机由它说了算；它阻塞等 DMA 时
-     * Task1/2 照常跑 —— "UI 不卡别人"的结构保证。
-     * 栈 1024 字 = 4KB：LVGL 9.6 渲染链（refr→draw→blend/字形）调用深，
-     * 512 字(2KB) 实测溢出 → 踩坏 FreeRTOS 堆 → HardFault 复位循环 */
-    if (xTaskCreate(task_ui, "task_ui", 1024, NULL, 3, NULL) != pdPASS)
-    {
-        uart_printf("create task_ui failed\r\n");
-    }
-#endif
+
+    /* 以后正式业务任务（task_ui / task_acq / task_storage / task_comm ...）
+     * 在这里创建。当前 task_ui 的联测放在 Test/test_task_ui.c
+     * （检查点 B 用例，调度器后由裁判任务判定），这里只保留双任务
+     * demo 作为"调度器活着 + UI 阻塞时别人照常跑"的活体证据 */
 }

@@ -146,6 +146,7 @@ to exclude the API function. */
 #define INCLUDE_xTaskAbortDelay				1
 #define INCLUDE_xTaskGetHandle				1
 #define INCLUDE_xSemaphoreGetMutexHolder	1
+#define INCLUDE_uxTaskGetStackHighWaterMark	1	/* 栈水位测量（task_ui 统计行用） */
 
 
 /* 内核侧打印走自实现 uart_printf（Bsp/bsp_uart.c），不依赖 libc printf */

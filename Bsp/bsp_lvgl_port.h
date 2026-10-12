@@ -22,6 +22,11 @@
  * 调用一次即可；之后再画控件、lv_refr_now / lv_timer_handler */
 void bsp_lvgl_port_init(uint8_t rotation);
 
+/* 开启异步刷新档（检查点 B）：静态二值信号量 + DMA 完成中断回调 +
+ * LVGL flush_wait_cb。必须在 bsp_lvgl_port_init 之后、开始渲染之前调。
+ * 不调用则保持同步档（检查点 A 语义）；重复调用无副作用（幂等） */
+void bsp_lvgl_port_async_enable(void);
+
 /* 教学计数：从上电起 flush_cb 被调用的次数（= 已下发多少块画布） */
 uint32_t bsp_lvgl_port_flush_cnt(void);
 

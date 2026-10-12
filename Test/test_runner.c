@@ -23,6 +23,7 @@ void test_sanity(void);
 void test_bsp_lcd(void);
 void test_lcd_perf(void);
 void test_lvgl_hello(void);
+void test_task_ui(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
 #define TEST_RUN(fn)                                                  \
@@ -49,6 +50,11 @@ int test_runner_run(void)
 #endif
 #if PSG_TEST_LVGL_HELLO
     TEST_RUN(test_lvgl_hello);
+#endif
+#if PSG_TEST_TASK_UI
+    /* 特殊用例：这里只创建 UI+裁判任务，真正判定行在调度器启动 6s 后
+     * 由 judge 任务打印（对象是调度器里的行为，runner 等不到它） */
+    TEST_RUN(test_task_ui);
 #endif
 
     uart_printf("===== %lu passed, %lu failed =====\r\n\r\n",

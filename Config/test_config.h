@@ -30,7 +30,11 @@
 
 /* LVGL 首例（硬件在环）：屏上显示 "Hello LVGL!"，打通 LVGL→flush_cb→SPI 链路
  * （部分刷新 + RGB565）。观察口诀：红字=全对  蓝字=驱动MADCTL要加BGR  青字=INVON极性反 */
-#define PSG_TEST_LVGL_HELLO     1
+#define PSG_TEST_LVGL_HELLO     0
+
+/* 检查点 B（硬件在环）：task_ui 异步 DMA + 信号量 + 调度器联测。
+ * 注意本用例的判定行在调度器启动 6s 后才打印（见 test_task_ui.c 文件头） */
+#define PSG_TEST_TASK_UI        1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -44,6 +48,7 @@
 #define PSG_TEST_LCD_WIRING     0
 #define PSG_TEST_LCD_PERF       0
 #define PSG_TEST_LVGL_HELLO     0
+#define PSG_TEST_TASK_UI        0
 
 #endif
 #endif /* TEST_CONFIG_H */

@@ -32,8 +32,9 @@ void task_ui(void *arg)
 
     (void)arg;
 
-    /* 1. 移植层：LCD + LVGL + 异步 DMA + 信号量（横屏 320x240） */
+    /* 1. 移植层：LCD + LVGL（横屏 320x240）+ 异步 DMA 三件套 */
     bsp_lvgl_port_init(LCD_ROT_LANDSCAPE);
+    bsp_lvgl_port_async_enable();   /* 信号量 + DMA 完成中断 + wait_cb（B 档） */
 
     /* 2. 唯一 tick 源：替代 lv_tick_inc 方案，防重复计时 */
     lv_tick_set_cb(lv_tick_cb);
@@ -66,10 +67,13 @@ void task_ui(void *arg)
             uint32_t ds = 0, dd = 0, de = 0;
 
             bsp_lcd_dma_stats(&ds, &dd, &de);
-            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu\r\n",
+            /* 栈水位 = 历史最小剩余（字）：改控件/换字体后重看这个数，
+             * 余量 < 1/3 就该加栈 —— 量，别猜（2KB 溢出的教训） */
+            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu stk_free=%lu w\r\n",
                         (unsigned long)bsp_lvgl_port_flush_cnt(),
                         (unsigned long)ds, (unsigned long)dd,
-                        (unsigned long)de);
+                        (unsigned long)de,
+                        (unsigned long)uxTaskGetStackHighWaterMark(NULL));
             last_stat = xTaskGetTickCount();
         }
     }
