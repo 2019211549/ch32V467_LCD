@@ -1,0 +1,7 @@
+SystemClk:200000000
+ChipID:46720002
+
+===== PSG unit tests =====
+[RUN ] test_sanity
+[ OK ] test_sanity
+[RUN ] test_lvgl_hello
