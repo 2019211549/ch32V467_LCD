@@ -17,6 +17,7 @@
 #include "bsp_lvgl_port.h"
 #include "bsp_lcd.h"
 #include "lvgl.h"
+#include "psg_config.h"     /* PSG_LVGL_DOUBLE_BUF：双画布开关 */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
@@ -26,6 +27,12 @@
  * 横屏 320 宽时每块 24 行 —— 同一块缓冲两种方向都能用。
  * LV_DRAW_BUF_ALIGN=4（lv_conf.h），静态数组按 4 对齐 */
 static uint8_t s_draw_buf[320 * 24 * 2] __attribute__((aligned(4)));
+
+/* 第二块画布（检查点 C，PSG_LVGL_DOUBLE_BUF=1 时启用）：
+ * 画块 N 的 DMA 读 buf1 时，LVGL 往 buf2 画块 N+1，交替使用 */
+#if PSG_LVGL_DOUBLE_BUF
+static uint8_t s_draw_buf2[320 * 24 * 2] __attribute__((aligned(4)));
+#endif
 
 /* 教学计数：flush 次数（一次刷新会按画布大小切成 N 块） */
 static uint32_t s_flush_cnt;
@@ -131,8 +138,17 @@ void bsp_lvgl_port_init(uint8_t rotation)
 
     lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565); /* 与驱动 COLMOD 0x55 一致 */
     lv_display_set_flush_cb(s_disp, flush_cb);  //当你绘图完成，需要更新 LCD 时，就调用我提供的 flush_cb 函数。”
+    /* 告诉 LVGL 用哪块内存绘图/多大/什么刷新模式。第二个参数为 NULL = 单画布；
+     * 传第二块 = 双画布（buf_size 是【单块】字节数，两块等大）——LVGL 在
+     * 每次调 flush_cb 前先等上一笔 DMA 完成（lv_refr.c:1418），然后换
+     * buf_act（:1433-1443），渲染与传输流水线化 */
+#if PSG_LVGL_DOUBLE_BUF
+    lv_display_set_buffers(s_disp, s_draw_buf, s_draw_buf2, sizeof(s_draw_buf),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);  //双缓冲：画N+1 ∥ 发N
+#else
     lv_display_set_buffers(s_disp, s_draw_buf, NULL, sizeof(s_draw_buf),
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);  //  告诉 LVGL 使用哪一块内存绘图、这块内存有多大，以及按照什么模式进行刷新。 //这里可以实现双缓冲
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);  //单缓冲：画下一块前必须等上一块发完
+#endif
 }
 
 void bsp_lvgl_port_async_enable(void)

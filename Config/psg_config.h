@@ -37,4 +37,12 @@
 /* 测试框架总使能 = 是否处于单元测试模式（不要直接改这个） */
 #define PSG_TEST_ENABLE         (PSG_MODE == PSG_MODE_UNIT_TEST)
 
+/* ==================== LVGL 显示特性 ==================== */
+/* 双画布（检查点 C）：1 = 渲染与 DMA 流水线化（CPU 画块N+1 ∥ DMA 发块N，
+ * 各用一块画布）；0 = 单画布对比档（画下一块前必须等上一块发完）。
+ * 只影响 bsp_lvgl_port.c 的画布注册，RAM 相差 15K。两档的等待点都经
+ * flush_wait_cb 走信号量：单缓冲 lv_refr.c:1063（复用画布前）、
+ * 双缓冲 lv_refr.c:1418（调 flush_cb 之前） */
+#define PSG_LVGL_DOUBLE_BUF     1
+
 #endif /* PSG_CONFIG_H */

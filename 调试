@@ -1,25 +1,18 @@
-static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
-{
-    bsp_lcd_set_window((uint16_t)area->x1, (uint16_t)area->y1,
-                       (uint16_t)area->x2, (uint16_t)area->y2);
+SystemClk:200000000
+ChipID:46720002
 
-    if (s_async_flush != 0)
-    {
-        if (bsp_lcd_write_pixels_async((const uint16_t *)px_map,
-            (uint32_t)(area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1)) == 0)
-        {
-            s_flush_cnt++; //统计回调次数
-            return;        /* 异步正常路径：不调 flush_ready，完成通知全权由 wait_cb 机制给出 */
-        }
-        /* 异步入口拒收（奇地址/超大块）——内部已同步发完，立即 ready，
-         * 否则 wait_cb 会白等一次 200ms 超时（没人 give 信号量） */
-    }
+===== PSG unit tests =====
+[RUN ] test_sanity
+[ OK ] test_sanity
+[RUN ] test_task_ui
+test_task_ui: UI+judge 已建，判定行在调度器启动 6s 后打印
+[ OK ] test_task_ui
+===== 5 passed, 0 failed =====
 
-    /* 同步档（检查点 A 语义）：发完才返回，画布立即可以复用 */
-    bsp_lcd_write_pixels((const uint16_t *)px_map,
-        (uint32_t)(area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1));
-
-    s_flush_cnt++; //统计回调次数
-
-    lv_display_flush_ready(disp);
-}
+task_ui stat: flush=14 dma 14/14 err=0 fb=0 stk_free=219 w
+[ OK ] test_task_ui(judge@6s): flush=16 dma 16/16 err=0 fb=0
+task_ui stat: flush=19 dma 19/19 err=0 fb=0 stk_free=219 w
+task_ui stat: flush=24 dma 24/24 err=0 fb=0 stk_free=219 w
+task_ui stat: flush=29 dma 29/29 err=0 fb=0 stk_free=219 w
+task_ui stat: flush=34 dma 34/34 err=0 fb=0 stk_free=219 w
+task_ui stat: flush=39 dma 39/39 err=0 fb=0 stk_free=219 w
