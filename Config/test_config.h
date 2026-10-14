@@ -36,6 +36,12 @@
  * 注意本用例的判定行在调度器启动 6s 后才打印（见 test_task_ui.c 文件头） */
 #define PSG_TEST_TASK_UI        1
 
+/* 触摸 T1（硬件在环）：FT6336 坐标串口流式打印（I3C legacy 传输，2026-10-13
+ * 板证通过）。T2 起触摸由 task_ui 的 LVGL indev 路径接管（30ms 真链路轮询
+ * + touch 日志），与本用例的 100ms 轮询任务会并发打 I3C —— 平时置 0，
+ * 要单独回归触摸驱动时再开（开着会和 task_ui 抢总线，err 会涨） */
+#define PSG_TEST_BSP_TOUCH      0
+
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
  */
@@ -49,6 +55,7 @@
 #define PSG_TEST_LCD_PERF       0
 #define PSG_TEST_LVGL_HELLO     0
 #define PSG_TEST_TASK_UI        0
+#define PSG_TEST_BSP_TOUCH      0
 
 #endif
 #endif /* TEST_CONFIG_H */

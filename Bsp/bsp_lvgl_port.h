@@ -30,4 +30,20 @@ void bsp_lvgl_port_async_enable(void);
 /* 教学计数：从上电起 flush_cb 被调用的次数（= 已下发多少块画布） */
 uint32_t bsp_lvgl_port_flush_cnt(void);
 
+/* 触摸 indev 初始化（T2）：bsp_touch + lv_indev(POINTER) + read_cb。
+ * 必须在 bsp_lvgl_port_init 之后调（建默认屏在前）。幂等。
+ * 返回 0=成功；1=触摸不在线（不挡显示，返回错误码由调用方决定怎么处理）；
+ * 2=没先 init 显示；3=LVGL 内存池不够 */
+uint8_t bsp_lvgl_port_touch_init(void);
+
+/* 玻璃坐标 -> 横屏逻辑坐标（纯函数，测试/日志用）：
+ * 映射②（板证 2026-10-13）：u=玻璃y, v=239-玻璃x，越界钳位。
+ * 实现见 bsp_lvgl_port.c 注释（四角实测数据） */
+void bsp_lvgl_port_touch_map(uint16_t gx, uint16_t gy, uint16_t *u, uint16_t *v);
+
+/* read_cb 最近一次读数（原始+映射+状态+累计错误数），诊断打印用。
+ * 参数可传 0 跳过 */
+void bsp_lvgl_port_touch_dbg(uint16_t *gx, uint16_t *gy, uint16_t *u,
+                             uint16_t *v, uint8_t *pressed, uint32_t *err);
+
 #endif /* BSP_LVGL_PORT_H */

@@ -1,16 +1,20 @@
-SystemClk:200000000
-ChipID:46720002
-
 ===== PSG unit tests =====
 [RUN ] test_sanity
 [ OK ] test_sanity
 [RUN ] test_task_ui
 test_task_ui: UI+judge 已建，判定行在调度器启动 6s 后打印
 [ OK ] test_task_ui
-===== 5 passed, 0 failed =====
+[RUN ] test_bsp_touch
+  ASSERT FAILED: ../Test/test_bsp_touch.c:64: bsp_touch_init() == 0
+  ASSERT FAILED: ../Test/test_bsp_touch.c:70: bsp_touch_read_regs(FT6336_REG_FIRMID, &fw, 1) == 0
+FT6336 FIRMID=0x0 (dbg: stage=4 EVR=0x204002 STATER=0x0 PCFR2=0x4000)
+touch: 请点屏幕四角+中心，记录原始坐标（左上应约(0,0) 右下(239,319)）
+[FAIL] test_bsp_touch
+===== 6 passed, 2 failed =====
 
 task_ui stat: flush=14 dma 14/14 err=0 fb=0 stk_free=219 w
-[ OK ] test_task_ui(judge@6s): flush=16 dma 16/16 err=0 fb=0
+  ASSERT FAILED: ../Test/test_task_ui.c:49: start == done (expect=16 actual=15)
+[FAIL] test_task_ui(judge@6s): flush=16 dma 16/15 err=0 fb=0
 task_ui stat: flush=19 dma 19/19 err=0 fb=0 stk_free=219 w
 task_ui stat: flush=24 dma 24/24 err=0 fb=0 stk_free=219 w
 task_ui stat: flush=29 dma 29/29 err=0 fb=0 stk_free=219 w

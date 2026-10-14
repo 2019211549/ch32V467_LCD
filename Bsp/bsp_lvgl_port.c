@@ -16,6 +16,7 @@
  *********************************************************************/
 #include "bsp_lvgl_port.h"
 #include "bsp_lcd.h"
+#include "bsp_touch.h"
 #include "lvgl.h"
 #include "psg_config.h"     /* PSG_LVGL_DOUBLE_BUF：双画布开关 */
 #include "FreeRTOS.h"
@@ -170,4 +171,97 @@ void bsp_lvgl_port_async_enable(void)
 uint32_t bsp_lvgl_port_flush_cnt(void)
 {
     return s_flush_cnt;
+}
+
+/* ==================== 触摸 indev（T2：LVGL 轮询式指针设备） ====================
+ * 模型：不建触摸任务 —— lv_indev_create 自带一个 33ms 的读定时器
+ * （LV_DEF_REFR_PERIOD，与刷新周期同一个宏，lv_indev.c:105），lv_timer_handler
+ * 里周期调 touch_read_cb，
+ * 和渲染同在 task_ui 上下文，无锁。read_cb 只管填"当前状态+当前点"，
+ * 按下/抬起/点击事件全部由 LVGL 状态机自己合成。
+ *
+ * 坐标映射（板证 2026-10-13，映射②）：玻璃原生竖屏 240x320，屏以横屏
+ * 装配 —— 摸屏幕物理左上角玻璃读数≈(239,0)，右下≈(0,319)，故
+ *   逻辑x(u,0..319) = 玻璃y(gy)      逻辑y(v,0..239) = 239 - 玻璃x(gx)
+ * 四角实测：TL 玻璃(239,25)→(25,0)  BR 玻璃(0,302)→(302,239)（指腹偏移内）
+ * 只配了横屏（当前产品形态）；换方向要连映射一起改，别只转屏 */
+static uint8_t  s_touch_inited;    /* 幂等保护，与 s_inited 同款 */
+static uint16_t s_last_gx, s_last_gy;      /* read_cb 最近一次成功读数（日志用） */
+static uint16_t s_map_u, s_map_v;          /* 对应的映射后逻辑坐标 */
+static uint8_t  s_last_pressed;            /* 最近一次按下状态 */
+static uint32_t s_touch_err;               /* read_cb 读失败计数（长期健康指标） */
+
+void bsp_lvgl_port_touch_map(uint16_t gx, uint16_t gy, uint16_t *u, uint16_t *v)
+{
+    int32_t uu = (int32_t)gy;               /* 映射②，见上 */
+    int32_t vv = 239 - (int32_t)gx;
+
+    if (uu < 0)     { uu = 0; }
+    else if (uu > 319) { uu = 319; }        /* 边缘越界钳位（指腹压边会读出界） */
+    if (vv < 0)     { vv = 0; }
+    else if (vv > 239) { vv = 239; }
+    *u = (uint16_t)uu;
+    *v = (uint16_t)vv;
+}
+
+/* read_cb 契约：每次填 data->state + data->point 即可。
+ * 读失败时沿用上次状态 —— 总线抖一下不能变成假抬起/假按下 */
+static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    uint16_t gx = 0;
+    uint16_t gy = 0;
+    uint8_t  pressed = 0;
+
+    (void)indev;
+
+    if (bsp_touch_read(&gx, &gy, &pressed) == 0)
+    {
+        uint16_t u = 0;
+        uint16_t v = 0;
+
+        bsp_lvgl_port_touch_map(gx, gy, &u, &v);  //坐标映射
+        s_last_gx = gx;
+        s_last_gy = gy;
+        s_map_u   = u;
+        s_map_v   = v;
+        s_last_pressed = pressed;
+    }
+    else
+    {
+        s_touch_err++;
+    }
+
+    data->point.x = s_map_u;
+    data->point.y = s_map_v;
+    data->state = (s_last_pressed != 0) ? LV_INDEV_STATE_PRESSED
+                                        : LV_INDEV_STATE_RELEASED;
+}
+
+uint8_t bsp_lvgl_port_touch_init(void)
+{
+    lv_indev_t *indev;
+
+    if (s_touch_inited != 0)  { return 0; }   /* 幂等 */
+    if (s_disp == NULL)       { return 2; }   /* 先 bsp_lvgl_port_init */
+    if (bsp_touch_init() != 0){ return 1; }   /* 触摸不在线：返回错误码但不挡显示 */
+
+    indev = lv_indev_create();                /* 自带 33ms 读定时器（LVGL 实现在 lv_indev.c:88） */
+    if (indev == NULL)        { return 3; }   /* 内存池不够（LV_MEM_SIZE） */
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, touch_read_cb);
+    /* 不调 lv_indev_set_display：绑定默认屏（当前唯一屏） */
+
+    s_touch_inited = 1;
+    return 0;
+}
+
+void bsp_lvgl_port_touch_dbg(uint16_t *gx, uint16_t *gy, uint16_t *u,
+                             uint16_t *v, uint8_t *pressed, uint32_t *err)
+{
+    if (gx      != 0) { *gx      = s_last_gx;      }
+    if (gy      != 0) { *gy      = s_last_gy;      }
+    if (u       != 0) { *u       = s_map_u;        }
+    if (v       != 0) { *v       = s_map_v;        }
+    if (pressed != 0) { *pressed = s_last_pressed; }
+    if (err     != 0) { *err     = s_touch_err;    }
 }

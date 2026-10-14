@@ -443,8 +443,7 @@ static void spi1_send_half(uint16_t h)
 
 static volatile uint8_t s_dma_inflight;   /* start 置 1，收尾清 0 */
 static uint32_t s_dma_start_cnt, s_dma_done_cnt, s_dma_err_cnt;
-static uint32_t s_dma_fallback_cnt;     /* async 入口拒收、降级同步的次数
-                                          * （当前 LVGL 用法下应恒为 0，见 getter 注释） */
+static uint32_t s_dma_fallback_cnt;    /* 异步入口降级同步的累计次数（getter 注释见下） */
 
 /* DMA 时钟 + 通道配置（bsp_lcd_init 尾部调一次）：
  * 半字/半字、MINC 开、PINC 关、Normal 模式、高优先级、外设口 SPI1->DATAR */
@@ -553,10 +552,13 @@ void bsp_lcd_dma_stats(uint32_t *start, uint32_t *done, uint32_t *err)
     }
 }
 
-/* 异步入口降级同步的累计次数。当前 LVGL 部分刷新用法下三个拒收条件
- * 数学上都不可能触发（块<=7680半字<32768；px_map=4对齐画布首地址恒偶；
- * LVGL 不刷空区域），它只在渲染模式改成 DIRECT/FULL 或有人拿野指针
- * 直调 API 时才会动 —— 所以它是"不变量监视器"：恒 0 = 永远在走异步 */
+/* 异步入口降级同步的累计次数（task_ui 统计行的 fb、judge 的不变量断言）。
+ * 触发条件 = bsp_lcd_write_pixels_async 开头的拒收判定：
+ *   count==0 / count>32768（超 DMA 单笔 16 位 CNTR 上限）/ 像素地址奇数
+ *   （DMA 半字传输的对齐要求）。
+ * 正常应恒为 0：LVGL 部分刷新块最大 320x24=7680 半字，静态画布天然
+ * 偶地址。什么时候可能动：换全屏渲染模式（块会超 32768）、画布改成
+ * 动态分配（可能奇地址）——动了先看这里再查别的 */
 uint32_t bsp_lcd_dma_fallback_cnt(void)
 {
     return s_dma_fallback_cnt;
@@ -585,6 +587,7 @@ void bsp_lcd_dma_irq_handler(void)
 /* 使能 DMA 完成中断并注册回调（整个工程只调一次，bsp_lvgl_port_init 里） */
 void bsp_lcd_dma_async_enable(bsp_lcd_dma_cb_t cb)
 {
+    
     lcd_dma_sync();
     s_dma_cb = cb;
     DMA_ClearFlag(DMA1_FLAG_GL3);
@@ -611,7 +614,7 @@ int bsp_lcd_write_pixels_async(const uint16_t *pixels, uint32_t count)
 {
     if ((count == 0) || (count > 32768) || (((uint32_t)pixels & 1u) != 0))
     {
-        s_dma_fallback_cnt++;                        /* 让降级可见：统计行/judge 断言盯着它 */
+        s_dma_fallback_cnt++;                        /* 降级计数：正常应恒 0 */
         bsp_lcd_write_pixels(pixels, count);         /* 同步回退（含全部收尾） */
         return 1;
     }

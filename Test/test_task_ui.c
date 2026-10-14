@@ -62,6 +62,7 @@ static void judge_task(void *arg)
 
 void test_task_ui(void)
 {
+    
     /* 栈 1024 字(4KB)：LVGL 渲染链深，512 字(2KB) 实测溢出 ->
      * 踩坏 FreeRTOS 堆 -> HardFault 复位循环（2026-10 排障结论） */
     TEST_ASSERT(xTaskCreate(task_ui, "task_ui", 1024, NULL, 3, NULL) == pdPASS);

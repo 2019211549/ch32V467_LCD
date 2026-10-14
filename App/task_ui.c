@@ -39,9 +39,40 @@ static void cnt_timer_cb(lv_timer_t *timer)
                           "cnt: %d", (int)n);
 }
 
+/* 按钮 CLICKED 事件（T2b 触摸验收控件）：点击事件由 LVGL 从 indev 的
+ * 按下/抬起状态变化自动合成 —— 这里只数数改字，什么都不用判 */
+static void btn_event_cb(lv_event_t *e)
+{
+    static uint32_t taps;
+
+    lv_label_set_text_fmt((lv_obj_t *)lv_event_get_user_data(e),
+                          "Tap: %d", (int)(++taps));
+}
+
+/* 触摸日志（T2a 映射数字验证）：从 indev 真链路取最近一次读数，
+ * 只在按下/抬起边沿各打一行 —— 摸屏幕四角看 raw→map 是否落位 */
+static void touch_log_cb(lv_timer_t *timer)
+{
+    static uint8_t last;
+    uint16_t gx = 0, gy = 0, u = 0, v = 0;
+    uint8_t p = 0;
+    uint32_t err = 0;
+
+    (void)timer;
+    bsp_lvgl_port_touch_dbg(&gx, &gy, &u, &v, &p, &err);
+    if (p != last)
+    {
+        uart_printf("touch: raw(%d,%d) -> map(%d,%d) %s err=%lu\r\n",
+                    (int)gx, (int)gy, (int)u, (int)v,
+                    (p != 0) ? "PRESS" : "RELEASE", (unsigned long)err);
+        last = p;
+    }
+}
+
 void task_ui(void *arg)
 {
     TickType_t last_stat = xTaskGetTickCount();
+    uint8_t touch_rc;
 
     (void)arg;
 
@@ -52,19 +83,39 @@ void task_ui(void *arg)
     /* 2. 唯一 tick 源：替代 lv_tick_inc 方案，防重复计时 */
     lv_tick_set_cb(lv_tick_cb);
 
-    /* 3. 页面：红字 Hello 居中（颜色诊断沿用）+ 每秒计数 Label
-     * （检查点 C：计数变化只弄脏 Label 一小块 → 每秒只刷 1~2 条带，
-     * 而不是整屏 10 条带 —— 这是"局部刷新"的活体演示） */
+    /* 3. 触摸 indev（T2）：内部幂等；不在线不挡显示，只打一行 */
+    touch_rc = bsp_lvgl_port_touch_init();
+    if (touch_rc != 0)
+    {
+        uart_printf("task_ui: touch init fail rc=%d（继续跑显示）\r\n", (int)touch_rc);
+    }
+
+    /* 4. 页面：红字 Hello（顶部，颜色诊断沿用）+ 按钮（T2b 触摸验收：
+     *    手指点它计数+1 = 触摸→indev→事件→UI 全链路通）+ 每秒计数 Label
+     *    （底部，检查点 C：局部刷新的活体演示） */
     lv_obj_t *label = lv_label_create(lv_screen_active());
     lv_label_set_text(label, "Hello LVGL11!");
     lv_obj_set_style_text_color(label, lv_color_hex(0xFF0000), 0);
-    lv_obj_center(label);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 15);
+
+    lv_obj_t *btn = lv_button_create(lv_screen_active());
+    lv_obj_set_size(btn, 160, 60);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t *btn_lbl = lv_label_create(btn);       /* 按钮内建 Label 显示计数 */
+    lv_label_set_text(btn_lbl, "Tap: 0");
+    lv_obj_center(btn_lbl);
+    lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, btn_lbl);
 
     lv_obj_t *cnt_lbl = lv_label_create(lv_screen_active());
     lv_label_set_text(cnt_lbl, "cnt: 0");
     lv_obj_set_style_text_color(cnt_lbl, lv_color_hex(0xFF0000), 0);
-    lv_obj_align(cnt_lbl, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_align(cnt_lbl, LV_ALIGN_BOTTOM_MID, 0, -15);
     lv_timer_create(cnt_timer_cb, 1000, cnt_lbl);   /* 1s 一跳，回调里只改文字 */
+
+    if (touch_rc == 0)
+    {
+        lv_timer_create(touch_log_cb, 100, NULL);   /* T2a：边沿触发打映射数字 */
+    }
 
     /* 4. 心跳循环 */
     for (;;)
@@ -86,15 +137,18 @@ void task_ui(void *arg)
         if ((xTaskGetTickCount() - last_stat) >= pdMS_TO_TICKS(5000))
         {
             uint32_t ds = 0, dd = 0, de = 0;
+            uint32_t terr = 0;
 
             bsp_lcd_dma_stats(&ds, &dd, &de);
+            bsp_lvgl_port_touch_dbg(0, 0, 0, 0, 0, &terr);  /* 触摸长期健康指标 */
             /* 栈水位 = 历史最小剩余（字）：改控件/换字体后重看这个数，
              * 余量 < 1/3 就该加栈 —— 量，别猜（2KB 溢出的教训） */
-            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu fb=%lu stk_free=%lu w\r\n",
+            uart_printf("task_ui stat: flush=%lu dma %lu/%lu err=%lu fb=%lu t_err=%lu stk_free=%lu w\r\n",
                         (unsigned long)bsp_lvgl_port_flush_cnt(),
                         (unsigned long)ds, (unsigned long)dd,
                         (unsigned long)de,
                         (unsigned long)bsp_lcd_dma_fallback_cnt(),
+                        (unsigned long)terr,
                         (unsigned long)uxTaskGetStackHighWaterMark(NULL));
             last_stat = xTaskGetTickCount();
         }

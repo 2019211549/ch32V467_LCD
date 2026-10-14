@@ -24,6 +24,7 @@ void test_bsp_lcd(void);
 void test_lcd_perf(void);
 void test_lvgl_hello(void);
 void test_task_ui(void);
+void test_bsp_touch(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
 #define TEST_RUN(fn)                                                  \
@@ -55,6 +56,10 @@ int test_runner_run(void)
     /* 特殊用例：这里只创建 UI+裁判任务，真正判定行在调度器启动 6s 后
      * 由 judge 任务打印（对象是调度器里的行为，runner 等不到它） */
     TEST_RUN(test_task_ui);
+#endif
+#if PSG_TEST_BSP_TOUCH
+    /* 交互用例：坐标打印在调度器里持续输出，判定靠人工看串口 */
+    TEST_RUN(test_bsp_touch);
 #endif
 
     uart_printf("===== %lu passed, %lu failed =====\r\n\r\n",
