@@ -311,6 +311,33 @@ uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len)
     return len;
 }
 
+/* ==================== TE（撕裂效应）命令（探索实验，2026-10-15） ====================
+ * ST7789 命令集：TEOFF(0x34) / TEON(0x35) / SETSCR(0x44)。本模组 FPC 没有
+ * 焊出 TE 引脚（pin15~18 NC）——TE 是面板→MCU 的纯电平输出，打了命令也
+ * 只打在没接的 pad 上，电学上永远测不到。但仍值得实验的原因：TE 模式的
+ * 开/关状态记录在 RDDST(0x09) 状态字里，能走 SDO(pin7)→PA6 读回来验证
+ * 命令真的进了面板。入口防御同 set_rotation：先等 DMA 像素流收尾 */
+void bsp_lcd_te_on(uint8_t mode)
+{
+    lcd_dma_sync();
+    lcd_write_cmd(0x35);                       /* TEON */
+    lcd_write_data1(mode != 0 ? 1u : 0u);      /* 0=仅V-blanking 1=V+H blanking */
+}
+
+void bsp_lcd_te_off(void)
+{
+    lcd_dma_sync();
+    lcd_write_cmd(0x34);                       /* TEOFF，无参数 */
+}
+
+void bsp_lcd_te_set_scanline(uint16_t line)
+{
+    lcd_dma_sync();
+    lcd_write_cmd(0x44);                       /* SETSCR：TE 脉冲发生在第几行 */
+    lcd_write_data1((uint8_t)(line >> 8));     /* 10bit 有效，高 2 位先发 */
+    lcd_write_data1((uint8_t)(line & 0xFFu));
+}
+
 void bsp_lcd_init(void)
 {
     spi1_init();

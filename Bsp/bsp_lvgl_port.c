@@ -241,7 +241,7 @@ uint8_t bsp_lvgl_port_touch_init(void)
 {
     lv_indev_t *indev;
 
-    if (s_touch_inited != 0)  { return 0; }   /* 幂等 */
+    if (s_touch_inited != 0)  { return 0; }   /* 幂等 */  //防止重复创建
     if (s_disp == NULL)       { return 2; }   /* 先 bsp_lvgl_port_init */
     if (bsp_touch_init() != 0){ return 1; }   /* 触摸不在线：返回错误码但不挡显示 */
 

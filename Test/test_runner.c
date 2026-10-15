@@ -25,6 +25,8 @@ void test_lcd_perf(void);
 void test_lvgl_hello(void);
 void test_task_ui(void);
 void test_bsp_touch(void);
+void test_t3_swipe(void);
+void test_te_explore(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
 #define TEST_RUN(fn)                                                  \
@@ -60,6 +62,14 @@ int test_runner_run(void)
 #if PSG_TEST_BSP_TOUCH
     /* 交互用例：坐标打印在调度器里持续输出，判定靠人工看串口 */
     TEST_RUN(test_bsp_touch);
+#endif
+#if PSG_TEST_T3_SWIPE
+    /* 交互用例：3s 自动演示 snap，8s judge 判定行；之后人工手滑验手感 */
+    TEST_RUN(test_t3_swipe);
+#endif
+#if PSG_TEST_TE_EXPLORE
+    /* 探索用例：TE 命令打进去、RDDST 状态读回来（无 TE 引脚的替代观察口） */
+    TEST_RUN(test_te_explore);
 #endif
 
     uart_printf("===== %lu passed, %lu failed =====\r\n\r\n",

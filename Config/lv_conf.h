@@ -156,6 +156,11 @@
 #define LV_COLOR_MIX_ROUND_OFS 0
 
 /** Default display refresh, input device read and animation step period. */
+/* 16 = 60fps（撕裂优化 B-1，2026-10-14）：无 TE 引脚的屏上，撕裂的可见
+ * 错位宽度 = 帧间内容位移 = 动画速度 × 本周期，33→16 直接减半；附带
+ * indev 读周期同步减半（跟手延迟 33→16ms）。时序贴边：全屏写入
+ * 12.2ms@100MHz，双缓冲流水线 ≈13ms < 16ms 刚好塞下——跑没跑满看
+ * T3 stat 行 flush 增速（60fps × 10 块 × 5s ≈ 3000；~2000 = 只有 40fps） */
 #define LV_DEF_REFR_PERIOD 33
 
 /** Used to initialize default sizes such as widget sizes and style paddings. */

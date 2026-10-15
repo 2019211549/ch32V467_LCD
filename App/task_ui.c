@@ -71,8 +71,8 @@ static void touch_log_cb(lv_timer_t *timer)
 
 void task_ui(void *arg)
 {
-    TickType_t last_stat = xTaskGetTickCount();
-    uint8_t touch_rc;
+    TickType_t last_stat = xTaskGetTickCount();  // 上一次统计时间
+    uint8_t touch_rc; //触摸初始化结果
 
     (void)arg;
 

@@ -1,22 +1,20 @@
 ===== PSG unit tests =====
 [RUN ] test_sanity
 [ OK ] test_sanity
-[RUN ] test_task_ui
-test_task_ui: UI+judge 已建，判定行在调度器启动 6s 后打印
-[ OK ] test_task_ui
-[RUN ] test_bsp_touch
-  ASSERT FAILED: ../Test/test_bsp_touch.c:64: bsp_touch_init() == 0
-  ASSERT FAILED: ../Test/test_bsp_touch.c:70: bsp_touch_read_regs(FT6336_REG_FIRMID, &fw, 1) == 0
-FT6336 FIRMID=0x0 (dbg: stage=4 EVR=0x204002 STATER=0x0 PCFR2=0x4000)
-touch: 请点屏幕四角+中心，记录原始坐标（左上应约(0,0) 右下(239,319)）
-[FAIL] test_bsp_touch
-===== 6 passed, 2 failed =====
+[RUN ] test_t3_swipe
+test_t3_swipe: UI+judge 已建，3s 自动演示，8s 判定行，之后随便手滑
+[ OK ] test_t3_swipe
+[RUN ] test_te_explore
+te baseline: RDDST=40 29 92 00
+te TEON(v-only): RDDST=40 29 93 00  diff: [2]92->93
+te TEON(v+h): RDDST=40 29 93 10  diff: [2]92->93 [3]00->10
+te SETSCR(80): RDDST=40 29 93 10  diff: [2]92->93 [3]00->10
+te TEOFF: RDDST=40 29 92 10  diff: [3]00->10
+te: 若 diff 列只在 TEON/TEOFF 步骤出现且 TEOFF 无 diff，说明命令已进面板（只是 pad 没接）
+[ OK ] test_te_explore
+===== 6 passed, 0 failed =====
 
-task_ui stat: flush=14 dma 14/14 err=0 fb=0 stk_free=219 w
-  ASSERT FAILED: ../Test/test_task_ui.c:49: start == done (expect=16 actual=15)
-[FAIL] test_task_ui(judge@6s): flush=16 dma 16/15 err=0 fb=0
-task_ui stat: flush=19 dma 19/19 err=0 fb=0 stk_free=219 w
-task_ui stat: flush=24 dma 24/24 err=0 fb=0 stk_free=219 w
-task_ui stat: flush=29 dma 29/29 err=0 fb=0 stk_free=219 w
-task_ui stat: flush=34 dma 34/34 err=0 fb=0 stk_free=219 w
-task_ui stat: flush=39 dma 39/39 err=0 fb=0 stk_free=219 w
+t3: auto-snap scroll_x=320 (期望 320)
+[ OK ] test_t3_swipe(judge@8s): flush=180 snap=1 touch=1 dma 180/180 err=0 fb=0
+t3 stat: flush=180 dma 180/180 err=0 fb=0 t_err=0 stk_free=59 w
+t3 stat: flush=180 dma 180/180 err=0 fb=0 t_err=0 stk_free=59 w

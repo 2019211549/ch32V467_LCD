@@ -33,14 +33,26 @@
 #define PSG_TEST_LVGL_HELLO     0
 
 /* 检查点 B（硬件在环）：task_ui 异步 DMA + 信号量 + 调度器联测。
- * 注意本用例的判定行在调度器启动 6s 后才打印（见 test_task_ui.c 文件头） */
-#define PSG_TEST_TASK_UI        1
+ * 注意本用例的判定行在调度器启动 6s 后才打印（见 test_task_ui.c 文件头）。
+ * T3 期间置 0：t3_ui 会另建一套页面，两个 UI 任务抢渲染 */
+#define PSG_TEST_TASK_UI        0
 
 /* 触摸 T1（硬件在环）：FT6336 坐标串口流式打印（I3C legacy 传输，2026-10-13
- * 板证通过）。T2 起触摸由 task_ui 的 LVGL indev 路径接管（30ms 真链路轮询
+ * 板证通过）。T2 起触摸由 LVGL indev 路径接管（33ms 真链路轮询
  * + touch 日志），与本用例的 100ms 轮询任务会并发打 I3C —— 平时置 0，
- * 要单独回归触摸驱动时再开（开着会和 task_ui 抢总线，err 会涨） */
+ * 要单独回归触摸驱动时再开（开着会和 indev 抢总线，err 会涨） */
 #define PSG_TEST_BSP_TOUCH      0
+
+/* T3 横滑切页（硬件在环）：3 整屏彩色页 + scroll snap 居中吸附，验证
+ * 跟手拖动 / 松手回弹 / 惯性翻页（iPhone 式分页）。3s 自动演示滑一页
+ * （无手指也能看 snap），8s judge 判定行。与 PSG_TEST_TASK_UI 互斥
+ * （两个任务各跑一套 LVGL 抢渲染），与 PSG_TEST_BSP_TOUCH 也互斥 */
+#define PSG_TEST_T3_SWIPE       1
+
+/* TE 命令探索（硬件在环）：本模组没焊 TE 引脚，但 TEON/TEOFF 的生效
+ * 与否可从 RDDST(0x09) 状态字读回验证——本用例打全套 TE 命令并逐字节
+ * 对比状态变化。纯驱动层，不需要调度器。看完置 0（探索性用例，无常驻价值） */
+#define PSG_TEST_TE_EXPLORE     1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -56,6 +68,8 @@
 #define PSG_TEST_LVGL_HELLO     0
 #define PSG_TEST_TASK_UI        0
 #define PSG_TEST_BSP_TOUCH      0
+#define PSG_TEST_T3_SWIPE       0
+#define PSG_TEST_TE_EXPLORE     0
 
 #endif
 #endif /* TEST_CONFIG_H */

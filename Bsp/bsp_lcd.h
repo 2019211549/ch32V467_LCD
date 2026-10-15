@@ -128,4 +128,12 @@ void bsp_lcd_dma_recover(void);
 /* 用纯色填充一块区域 */
 void bsp_lcd_fill(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color);
 
+/* ==================== TE（撕裂效应）命令实验 ====================
+ * ST7789 的 TE 输出控制。注意：本模组 FPC 没焊 TE 引脚（pin15~18 NC），
+ * 这些命令面板内部照常生效但电学上测不到；生效与否的观察窗口是
+ * RDDST(0x09) 状态字（bsp_lcd_read_reg 读回）。用法见 Test/test_te_explore.c */
+void bsp_lcd_te_on(uint8_t mode);            /* TEON(0x35)：0=仅V-blanking 1=V+H */
+void bsp_lcd_te_off(void);                   /* TEOFF(0x34) */
+void bsp_lcd_te_set_scanline(uint16_t line); /* SETSCR(0x44)：TE 脉冲行，10bit */
+
 #endif /* BSP_LCD_H */
