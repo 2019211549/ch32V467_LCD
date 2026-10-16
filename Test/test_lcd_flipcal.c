@@ -15,8 +15,11 @@
  * 相位偏移 Δ：
  *   - 起写延迟 δ0 ≥ 785 + Δ + 余量；板周期 pace = T_scan/20+8 ≈ 845µs
  *     （略慢于扫描 837µs，落后量只增不减）
- *   - 阶段B 默认 δ0=1650：对 Δ≤860µs 保证零撕裂
- *   - 阶段C δ0 阶梯：斜纹消失的最小 δ0* ≈ 785+Δ → Δ = δ0*−785µs
+ *   - 板证 2026-10-16 第四轮：δ0=1650 左上3齿、1750 左上2齿，齿随 δ0
+ *     增大左移缩小（方向符合理论；每+100µs约少1齿，比理论的 7.7µs/板
+ *     间距宽——按经验值走）
+ *   - 板证收官（第五轮）：1850有齿 / 1950·2050干净 / B@2000整屏零齿
+ *     → δ0*∈(1850,1950]，Δ = δ0*−785 ≈ 1.1ms（≈21列 porch），标定完结
  *
  * 写路径：
  *   阶段A 横带基线 = bsp_lcd_fill 轮询（对照用，斜线形态已知）
@@ -48,7 +51,8 @@
 #define FC_DMA_GUARD   8000000UL                   /* 单板等完成超时 ~53ms@150M */
 #define FC_SLAB_W      16u                         /* 板宽（列数） */
 #define FC_TRAIL_US    785u    /* 扫描渡越一块板=16×52.33µs：起写必须落后≥此值+Δ */
-#define FC_D0_SAFE     1650u   /* 阶段B 默认起写延迟：785+Δ(≤860)+余量 → 零撕裂 */
+#define FC_D0_SAFE     2100u   /* 生产起写延迟 = δ0*+150（板证 δ0*=1950，
+                                  1850仍有齿；安全窗 [1950,~16000]，取2100） */
 
 /* 16列×240行 乒乓双板：2×7.68K。生产形态下 LVGL 横带 gather 进这里 */
 static uint16_t s_slab[2][FC_SLAB_W * 240u];
@@ -273,7 +277,7 @@ void test_lcd_flipcal(void)
     uart_printf("flipcal: === 阶段B 竖板追扫δ0=%uus 4s ===\r\n",
                 (unsigned)FC_D0_SAFE);
     uart_printf("flipcal: 看：预期整屏干净红蓝交替（无斜纹无竖线）；\r\n"
-                "flipcal:       若最左16列仍残留一条斜纹=Δ>860µs，如实发回\r\n");
+                "flipcal:       若仍有齿，数齿数+记位置（应只剩左上角）\r\n");
     {
         uint32_t t_start = fc_cyc();
         uint32_t flips = 0, timeouts = 0;
@@ -306,20 +310,19 @@ void test_lcd_flipcal(void)
         TEST_ASSERT_EQ_INT(0, s_fc_dma_to);
     }
 
-    /* ---------- 阶段C：δ0 阶梯（测量 Δ：首个"完全干净"档 δ0* ≈ 785+Δ） ---------- */
-    uart_printf("flipcal: === 阶段C δ0阶梯（每档~1s 红蓝连翻）===\r\n");
-    uart_printf("flipcal: 看：δ0小=每16列一条陡斜纹(左上→右下)；\r\n"
-                "flipcal:       δ0增大→斜纹自屏幕右侧向左退，直到全干净；\r\n"
-                "flipcal:       记第一个完全干净的档δ0*，Δ ≈ δ0*−785us\r\n");
+    /* ---------- 阶段C：δ0 细阶梯（钉死 δ0*：齿数=0 的最小档） ---------- */
+    uart_printf("flipcal: === 阶段C δ0细阶梯（每档~1.6s 红蓝连翻）===\r\n");
+    uart_printf("flipcal: 看：逐档数左上角齿数（0/1/2/3..）；\r\n"
+                "flipcal:       齿数=0的最小档=δ0*，生产参数取 δ0*+150us\r\n");
     {
-        static const uint16_t d_tab[8] = { 0, 250, 500, 750, 1000, 1250, 1500, 1750 };
+        static const uint16_t d_tab[4] = { 1750, 1850, 1950, 2050 };
 
-        for (uint8_t k = 0; k < 8u; k++)
+        for (uint8_t k = 0; k < 4u; k++)
         {
             uart_printf("flipcal: --- 档%u δ0=%uus ---\r\n",
                         (unsigned)k, (unsigned)d_tab[k]);
             fc_delay_ticks(SystemCoreClock / 4u);          /* 250ms 静屏 */
-            for (uint8_t i = 0; i < 24u; i++)              /* 24×33.5ms≈0.8s */
+            for (uint8_t i = 0; i < 48u; i++)              /* 48×33.5ms≈1.6s */
             {
                 uint32_t t_det = fc_wait_wrap(50);
                 uint16_t color = (i & 1u) ? FC_COLOR_A : FC_COLOR_B;
@@ -331,8 +334,8 @@ void test_lcd_flipcal(void)
         }
         fc_slab_prepare(FC_COLOR_A);
         (void)fc_slab_screen(1, FC_D0_SAFE, pace_us, fc_wait_wrap(50), 0, 0);
-        uart_printf("flipcal: 阶段C 完。发回：A斜线方向 / B干净或有残留 / "
-                    "C首个干净档δ0* —— 由 δ0*−785us 钉死相位Δ\r\n");
+        uart_printf("flipcal: 阶段C 完。发回：B@2000齿数 / C各档齿数(如3/2/1/0)"
+                    " —— 齿数=0最小档=δ0*\r\n");
     }
 
     {
