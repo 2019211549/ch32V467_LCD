@@ -52,7 +52,13 @@
 /* TE 命令探索（硬件在环）：本模组没焊 TE 引脚，但 TEON/TEOFF 的生效
  * 与否可从 RDDST(0x09) 状态字读回验证——本用例打全套 TE 命令并逐字节
  * 对比状态变化。纯驱动层，不需要调度器。看完置 0（探索性用例，无常驻价值） */
-#define PSG_TEST_TE_EXPLORE     1
+#define PSG_TEST_TE_EXPLORE     0
+
+/* 片上 PSRAM 独立单元测试（硬件在环，只依赖芯片本身）：EVT 初始化
+ * （EVT 例程同款：SYSCLK 300M + 300M 档 + trc=0x14 + die MR 复位）+
+ * 三区间图案扫描 + 地址线别名自检 + 带宽粗测。与其它用例零耦合
+ * （不动 Link.ld/LVGL）。init FAIL 也会跑完诊断打印（失配形态定位） */
+#define PSG_TEST_BSP_PSRAM      1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -70,6 +76,7 @@
 #define PSG_TEST_BSP_TOUCH      0
 #define PSG_TEST_T3_SWIPE       0
 #define PSG_TEST_TE_EXPLORE     0
+#define PSG_TEST_BSP_PSRAM      0
 
 #endif
 #endif /* TEST_CONFIG_H */

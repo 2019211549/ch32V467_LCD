@@ -20,6 +20,7 @@
 #include "test_framework.h"
 
 void test_sanity(void);
+void test_bsp_psram(void);
 void test_bsp_lcd(void);
 void test_lcd_perf(void);
 void test_lvgl_hello(void);
@@ -44,6 +45,11 @@ int test_runner_run(void)
 
 #if PSG_TEST_SANITY
     TEST_RUN(test_sanity);
+#endif
+#if PSG_TEST_BSP_PSRAM
+    /* 独立用例：只依赖芯片本身（不依赖屏/调度器）；init FAIL 也会
+     * 跑完诊断打印（失配形态是降档定位的依据） */
+    TEST_RUN(test_bsp_psram);
 #endif
 #if PSG_TEST_BSP_LCD
     TEST_RUN(test_bsp_lcd);

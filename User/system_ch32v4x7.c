@@ -19,9 +19,10 @@
 */
 // #define SYSCLK_HCLK_HSE    HSE_VALUE
 // #define SYSCLK_120MHz_HCLK_60MHz_HSE   120000000
-// #define SYSCLK_240MHz_HCLK_120MHz_HSE  240000000  
-// #define SYSCLK_350MHz_HCLK_175MHz_HSE  350000000 
-#define SYSCLK_400MHz_HCLK_200MHz_HSE  400000000 
+// #define SYSCLK_240MHz_HCLK_120MHz_HSE  240000000
+#define SYSCLK_300MHz_HCLK_150MHz_HSE  300000000
+// #define SYSCLK_350MHz_HCLK_175MHz_HSE  350000000
+// #define SYSCLK_400MHz_HCLK_200MHz_HSE  400000000
 // #define SYSCLK_HCLK_HSI    HSI_VALUE
 // #define SYSCLK_120MHz_HCLK_60MHz_HSI   120000000
 // #define SYSCLK_240MHz_HCLK_120MHz_HSI  240000000 
@@ -48,6 +49,9 @@ uint32_t SystemCoreClock     = SYSCLK_240MHz_HCLK_120MHz_HSE >> 1;
 #elif defined SYSCLK_350MHz_HCLK_175MHz_HSE
 uint32_t SystemClock         = SYSCLK_350MHz_HCLK_175MHz_HSE;        /* System Clock Frequency */
 uint32_t SystemCoreClock     = SYSCLK_350MHz_HCLK_175MHz_HSE >> 1;
+#elif defined SYSCLK_300MHz_HCLK_150MHz_HSE
+uint32_t SystemClock         = SYSCLK_300MHz_HCLK_150MHz_HSE;        /* System Clock Frequency */
+uint32_t SystemCoreClock     = SYSCLK_300MHz_HCLK_150MHz_HSE >> 1;
 #elif defined SYSCLK_400MHz_HCLK_200MHz_HSE
 uint32_t SystemClock         = SYSCLK_400MHz_HCLK_200MHz_HSE;        /* System Clock Frequency */
 uint32_t SystemCoreClock     = SYSCLK_400MHz_HCLK_200MHz_HSE >> 1;
@@ -89,6 +93,8 @@ static void SetSYSCLK_120MHz_HCLK_60MHz_HSE( void );
 static void SetSYSCLK_240MHz_HCLK_120MHz_HSE( void );
 #elif defined SYSCLK_350MHz_HCLK_175MHz_HSE
 static void SetSYSCLK_350MHz_HCLK_175MHz_HSE( void );
+#elif defined SYSCLK_300MHz_HCLK_150MHz_HSE
+static void SetSYSCLK_300MHz_HCLK_150MHz_HSE( void );
 #elif defined SYSCLK_400MHz_HCLK_200MHz_HSE
 static void SetSYSCLK_400MHz_HCLK_200MHz_HSE( void );
 #elif defined SYSCLK_480MHz_HCLK_240MHz_HSE
@@ -234,8 +240,10 @@ static void SetSysClock(void)
     SetSYSCLK_240MHz_HCLK_120MHz_HSE();
 #elif defined SYSCLK_350MHz_HCLK_175MHz_HSE
     SetSYSCLK_350MHz_HCLK_175MHz_HSE();
+#elif defined SYSCLK_300MHz_HCLK_150MHz_HSE
+    SetSYSCLK_300MHz_HCLK_150MHz_HSE();
 #elif defined SYSCLK_400MHz_HCLK_200MHz_HSE
-    SetSYSCLK_400MHz_HCLK_200MHz_HSE();    
+    SetSYSCLK_400MHz_HCLK_200MHz_HSE();
 #elif defined SYSCLK_480MHz_HCLK_240MHz_HSE
     SetSYSCLK_480MHz_HCLK_240MHz_HSE();    
 #elif defined SYSCLK_120MHz_HCLK_60MHz_HSI
@@ -551,6 +559,92 @@ static void SetSYSCLK_350MHz_HCLK_175MHz_HSE(void)
       while ((RCC->CFGR2 & (uint32_t)RCC_SYSPLLSRC) != (uint32_t)RCC_SYSPLLSRC_PLL)
       {
       }     
+
+      /* Select FLASH clock frequency*/
+      FLASH->KEYR = ((uint32_t)0x45670123);
+      FLASH->KEYR = ((uint32_t)0xCDEF89AB);
+      FLASH->MODEKEYR = ((uint32_t)0x45670123);
+      FLASH->MODEKEYR = ((uint32_t)0xCDEF89AB);
+
+      FLASH_Temp = FLASH->CTLR ;
+      FLASH_Temp &= ~((uint32_t)FLASH_CTLR_SCKMOD);
+      FLASH_Temp |= FLASH_CTLR_SCKMOD_Div2;
+      FLASH->CTLR = FLASH_Temp;
+      FLASH->CTLR |= ((uint32_t)0x00008080);
+
+      /* Select PLL as system clock source */
+      RCC->CFGR2 |= (uint32_t)RCC_SYSPLL_GATE;
+      RCC->CFGR0 |= (uint32_t)RCC_SW_PLL;
+      /* Wait till PLL is used as system clock source */
+      while ((RCC->CFGR0 & (uint32_t)RCC_SWS) != (uint32_t)0x08)
+      {
+      }
+    }
+    else
+    {
+      /*
+       * If HSE fails to start-up, the application will have wrong clock
+       * configuration. User can add here some code to deal with this error
+       */
+    }
+}
+
+#elif defined SYSCLK_300MHz_HCLK_150MHz_HSE
+
+/*********************************************************************
+ * @fn      SetSYSCLK_300MHz_HCLK_150MHz_HSE
+ *
+ * @brief   Sets System clock frequency to 300MHz and configure HCLK, PCLK2 and PCLK1 prescalers.
+ *          （2026-10-16：PSRAM 400M 档板证数据失配（读回陈旧拍、MR 配置经回读
+ *           验证全对），降到 WCH EVT PSRAM 例程的同款主频 SYSCLK 300M / HCLK 150M）
+ *
+ * @return  none
+ */
+static void SetSYSCLK_300MHz_HCLK_150MHz_HSE(void)
+{
+    __IO uint32_t StartUpCounter = 0, HSEStatus = 0 , FLASH_Temp = 0;
+
+    RCC->CTLR |= ((uint32_t)RCC_HSEON);  //打开hse通路 ，晶振启动需要一定的时间
+
+    /* Wait till HSE is ready and if Time out is reached exit */
+    do
+    {
+      HSEStatus = RCC->CTLR & RCC_HSERDY;
+      StartUpCounter++;
+    } while((HSEStatus == 0) && (StartUpCounter != HSE_STARTUP_TIMEOUT)); //等待晶振启动完毕
+
+    if ((RCC->CTLR & RCC_HSERDY) != RESET)  //再次确认
+    {
+      HSEStatus = (uint32_t)0x01;
+    }
+    else
+    {
+      HSEStatus = (uint32_t)0x00;
+    }
+
+    if (HSEStatus == (uint32_t)0x01)
+    {
+      /* HCLK = SYSCLK /2 */
+      RCC->CFGR0 |= (uint32_t)RCC_HPRE_DIV2;
+      /* PCLK2 = HCLK */
+      RCC->CFGR0 |= (uint32_t)RCC_PPRE2_DIV1;
+      /* PCLK1 = HCLK */
+      RCC->CFGR0 |= (uint32_t)RCC_PPRE1_DIV1;
+
+      /* PLL configuration: HCLK = (HSE * 12) / 2 = 150 MHz */
+      RCC->CFGR0 |= (uint32_t)(RCC_PLLSRC_HSE | RCC_PLLMULL12);  //配置pll源是hse ，并且是12倍频
+      /* Enable PLL */
+      RCC->CTLR |= RCC_PLLON;  //开启
+      /* Wait till PLL is ready */
+      while((RCC->CTLR & RCC_PLLRDY) == 0)  //等待稳定
+      {
+      }
+
+      RCC->CFGR2 |= (uint32_t)(RCC_SYSPLLSRC_PLL | RCC_SYSPLLDIV1);
+      /* Wait till PLL clock is used as SYSPLLSRC clock source */
+      while ((RCC->CFGR2 & (uint32_t)RCC_SYSPLLSRC) != (uint32_t)RCC_SYSPLLSRC_PLL)
+      {
+      }
 
       /* Select FLASH clock frequency*/
       FLASH->KEYR = ((uint32_t)0x45670123);

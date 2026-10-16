@@ -1,20 +1,27 @@
+SystemClk:150000000
+ChipID:46750012
+
 ===== PSG unit tests =====
 [RUN ] test_sanity
 [ OK ] test_sanity
+[RUN ] test_bsp_psram
+bsp_psram: MR0写后回读 MR0=1c MR4=e0 MR8=05 (期望 1c/e0/00)
+bsp_psram: MR终态 MR0=1c MR4=e0 MR8=05
+bsp_psram: init OK (4MB @0x80000000, 300M档)
+psram: init OK（EVT序列, trc=0x14, 300M档+SYSCLK300M）
+psram: 区间扫描（起始64KB 中部8KB 尾部8KB）
+psram:   起始 64KB: 失配 0
+psram:   中部 8KB: 失配 0
+psram:   尾部 8KB: 失配 0
+psram: 地址线别名自检（全片 15 点）: 失配 0
+psram: 64KB 写 49MB/s 读 41MB/s（AN参考 写~130 读~111）
+psram: 结论 PASS —— 4MB 数据/地址线全对，PSRAM 可用
+[ OK ] test_bsp_psram
 [RUN ] test_t3_swipe
 test_t3_swipe: UI+judge 已建，3s 自动演示，8s 判定行，之后随便手滑
 [ OK ] test_t3_swipe
-[RUN ] test_te_explore
-te baseline: RDDST=40 29 92 00
-te TEON(v-only): RDDST=40 29 93 00  diff: [2]92->93
-te TEON(v+h): RDDST=40 29 93 10  diff: [2]92->93 [3]00->10
-te SETSCR(80): RDDST=40 29 93 10  diff: [2]92->93 [3]00->10
-te TEOFF: RDDST=40 29 92 10  diff: [3]00->10
-te: 若 diff 列只在 TEON/TEOFF 步骤出现且 TEOFF 无 diff，说明命令已进面板（只是 pad 没接）
-[ OK ] test_te_explore
-===== 6 passed, 0 failed =====
+===== 7 passed, 0 failed =====
 
 t3: auto-snap scroll_x=320 (期望 320)
 [ OK ] test_t3_swipe(judge@8s): flush=180 snap=1 touch=1 dma 180/180 err=0 fb=0
-t3 stat: flush=180 dma 180/180 err=0 fb=0 t_err=0 stk_free=59 w
 t3 stat: flush=180 dma 180/180 err=0 fb=0 t_err=0 stk_free=59 w
