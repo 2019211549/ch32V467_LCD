@@ -13,15 +13,21 @@
  *       —— 检查点 A 语义，调度器没启动也能跑（test_lvgl_hello 用）
  *   bsp_lvgl_port_async_enable() 后：异步 DMA + 完成中断 + 二值信号量
  *       —— 检查点 B 语义，task_ui / test_task_ui 用
+ *   bsp_lvgl_port_init_fullframe() 代替 init：整帧 DIRECT 模式 —— 画布
+ *       = 两块 PSRAM 全帧缓冲（"全局渲染"），flush_cb 把脏区切条带适配
+ *       DMA 单笔上限，逐条仍走异步 DMA（T4 A/B 对比实验；PSRAM 不在线
+ *       自动回退部分刷新，不黑屏）
  *********************************************************************/
 #include "bsp_lvgl_port.h"
 #include "bsp_lcd.h"
 #include "bsp_touch.h"
 #include "lvgl.h"
-#include "psg_config.h"     /* PSG_LVGL_DOUBLE_BUF：双画布开关 */
+#include "psg_config.h"     /* PSG_LVGL_DOUBLE_BUF：双画布开关 + PSG_LOG */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
+#include <string.h>         /* memset：上电清 PSRAM 帧缓冲 */
+#include "bsp_psram.h"      /* 整帧模式的帧缓冲窗口（BSP_PSRAM_WINDOW_BASE） */
 
 /* 部分刷新画布：按最大逻辑宽 320（横屏）x 24 行 x 2 字节 = 15K。
  * LVGL 按"当前 hor_res"自动折算每块行数：竖屏 240 宽时每块 32 行，
@@ -113,6 +119,101 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     lv_display_flush_ready(disp);
 }
 
+/* ==================== 整帧 PSRAM 渲染（T4：A/B 对比实验） ====================
+ * 与部分刷新的本质差别：LVGL 不再往 15K 小画布上画，画布就是整帧
+ * （RENDER_MODE_DIRECT，"全局渲染"），flush_cb 的 px_map = 帧缓冲起点
+ * （lv_refr.c 的 call_flush_cb 传 layer->draw_buf->data；其 LV_COLOR_16_SWAP
+ * 分支同样按 y1*行距+x1 索引 —— 即脏区首像素 = px_map + y1*行距 + x1）。
+ *
+ * 一帧 320x240x2 = 153600B，超 DMA 单笔 32768 半字上限（bsp_lcd 的守门
+ * 条件）→ 脏区按行切条带：320 宽时 32768/320 = 102 行/条，整屏 240 行
+ * = 3 条，逐条 set_window + 异步 DMA：
+ *   条带 1..N-1：启动后 xSemaphoreTake 睡眠等本条完成（CPU 让出，不是
+ *               轮询也不是同步发）——醒来时 TC 中断已收完总线，所以
+ *               下一条 set_window 入口的 dma_sync 防御不会空转
+ *   最后一条：  启动后立即返回 —— DMA 在飞期间 LVGL 已开画下一帧
+ *               （双缓冲另一块），flush_wait_cb（复用部分刷新的）在
+ *               LVGL 复用本帧缓冲前收走最后一个完成通知（lv_refr.c
+ *               在换缓冲前 wait_for_flushing）—— 传输与渲染流水线化 */
+static uint8_t  *s_ff_fb1;          /* 帧缓冲 A：PSRAM 窗口起点 0x80000000 */
+static uint8_t  *s_ff_fb2;          /* 帧缓冲 B：A 后面紧挨着 */
+static uint16_t  s_ff_stride_px;    /* 行距（半字）= 逻辑宽，横屏 320 */
+static uint8_t   s_ff_active;       /* 1 = 整帧 DIRECT 模式已生效 */
+static uint32_t  s_ff_strip_cnt;    /* 累计下发条带数（诊断：每帧几条） */
+
+static void ff_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    const uint16_t *src;
+    int32_t w = area->x2 - area->x1 + 1;
+    int32_t y = area->y1;
+    uint32_t lines_per_strip;
+    uint8_t  inflight = 0;          /* 1 = 有一条 DMA 在飞、完成通知未消费 */
+
+    if ((w <= 0) || (y > area->y2))
+    {
+        lv_display_flush_ready(disp);   /* 空脏区防御 */
+        return;
+    }
+
+    src = (const uint16_t *)px_map
+        + (uint32_t)area->y1 * (uint32_t)s_ff_stride_px + (uint32_t)area->x1;
+    lines_per_strip = 32768u / (uint32_t)w;     /* DMA 单笔上限(半字) ÷ 行宽 */
+
+    while (y <= area->y2)
+    {
+        int32_t h = area->y2 - y + 1;
+
+        if ((uint32_t)h > lines_per_strip)
+        {
+            h = (int32_t)lines_per_strip;
+        }
+
+        bsp_lcd_set_window((uint16_t)area->x1, (uint16_t)y,
+                           (uint16_t)area->x2, (uint16_t)(y + h - 1));
+
+        if ((s_async_flush != 0)
+            && (bsp_lcd_write_pixels_async(src, (uint32_t)w * (uint32_t)h) == 0))
+        {
+            inflight = 1;
+        }
+        else
+        {
+            /* 同步档，或异步拒收（拒收=内部已同步发完）。同步发完期间
+             * ISR 可能 give 过陈旧令牌，排空防下一条提前放行（同部分
+             * 刷新档的防御；条带 ≤32768 半字且地址恒偶，理论不会走到） */
+            if (s_async_flush != 0)
+            {
+                while (xSemaphoreTake(s_flush_sem, 0) == pdTRUE) { }
+            }
+            inflight = 0;
+        }
+
+        s_ff_strip_cnt++;
+
+        if ((inflight != 0) && (y + h - 1 < area->y2))
+        {
+            /* 中间条带：睡眠等本条 DMA 完成（200ms 超时兜底，同 wait_cb） */
+            if (xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(200)) != pdTRUE)
+            {
+                bsp_lcd_dma_recover();
+            }
+            inflight = 0;
+        }
+
+        src += (uint32_t)h * (uint32_t)s_ff_stride_px;
+        y += h;
+    }
+
+    s_flush_cnt++;   /* DIRECT 模式一次 flush_cb = 一整帧 */
+
+    if (inflight != 0)
+    {
+        return;      /* 最后一条在飞：完成通知留给 flush_wait_cb 收 */
+    }
+
+    lv_display_flush_ready(disp);   /* 全部同步发出去了：帧已完整上屏 */
+}
+
 void bsp_lvgl_port_init(uint8_t rotation)
 {
     if (s_inited)
@@ -150,6 +251,75 @@ void bsp_lvgl_port_init(uint8_t rotation)
     lv_display_set_buffers(s_disp, s_draw_buf, NULL, sizeof(s_draw_buf),
                            LV_DISPLAY_RENDER_MODE_PARTIAL);  //单缓冲：画下一块前必须等上一块发完
 #endif
+}
+
+/* 整帧帧缓冲字节数：320x240x2 = 153600B（横竖屏同字节数，都是 76800 像素）。
+ * 帧缓冲放 PSRAM 数据窗口（绝对地址指针，不进 Link.ld —— A/B 实验不动
+ * 工程身份文件；正式采用后再迁 .psram_bss 段） */
+#define FF_FB_BYTES     (320u * 240u * 2u)
+
+uint8_t bsp_lvgl_port_init_fullframe(uint8_t rotation)
+{
+    if (s_inited)
+    {
+        /* 幂等：只报当前模式，不重建（LVGL 建屏后缓冲方案不可换 ——
+         * 先有人跑过部分刷新的 init 就维持部分刷新） */
+        return (s_ff_active != 0) ? 0 : 1;
+    }
+
+    /* 前提：PSRAM 在线（init 内含自检，幂等——test_bsp_psram 先跑过也行）。
+     * 不在线 → 原部分刷新顶上（调用方拿到 1 能报"对比没做成"，不黑屏） */
+    if (bsp_psram_init() != 0)
+    {
+        PSG_LOG("lvgl_port: PSRAM 不可用，整帧模式回退部分刷新\r\n");
+        bsp_lvgl_port_init(rotation);
+        return 1;
+    }
+
+    s_inited = 1;
+
+    bsp_lcd_init();                    /* 与部分刷新档同一套 LCD/转屏/lv_init */
+    bsp_lcd_set_rotation(rotation);
+    lv_init();
+
+    /* 上电窗口里是 test_bsp_psram 的图案残留，清两块（CPU 写 ~49MB/s，
+     * 2x150KB ≈ 6ms，一次性）。LV_DRAW_BUF_ALIGN=4：0x80000000 与
+     * +153600 都满足 */
+    s_ff_fb1 = (uint8_t *)BSP_PSRAM_WINDOW_BASE;
+    s_ff_fb2 = s_ff_fb1 + FF_FB_BYTES;
+    memset(s_ff_fb1, 0, FF_FB_BYTES * 2u);
+    s_ff_stride_px = (uint16_t)bsp_lcd_width();
+
+    s_disp = lv_display_create(bsp_lcd_width(), bsp_lcd_height());
+    if (s_disp == NULL)
+    {
+        return 1;   /* 同部分刷新档：内存池不够，调用方断言兜底 */
+    }
+
+    lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_flush_cb(s_disp, ff_flush_cb);
+    /* RENDER_MODE_DIRECT：画布=整帧（buf_size ≥ 一帧），LVGL 直接画在
+     * 帧缓冲上，flush_cb 只搬脏区（ff_flush_cb 再切条带适配 DMA 上限）。
+     * 双缓冲：LVGL 轮流画 FB_A/FB_B，本帧 DMA(读A) ∥ 下帧渲染(写B)；
+     * 代价 = refr_sync_areas 把脏区 CPU 拷到另一块（全屏 ~150KB，
+     * PSRAM 带宽下 ~7ms/帧 的已知成本 —— judge 的帧周期实测里可见） */
+    lv_display_set_buffers(s_disp, s_ff_fb1, s_ff_fb2, FF_FB_BYTES,
+                           LV_DISPLAY_RENDER_MODE_DIRECT);
+
+    s_ff_active = 1;
+    PSG_LOG("lvgl_port: 整帧 DIRECT 模式 FB_A=%p FB_B=%p stride=%u\r\n",
+            s_ff_fb1, s_ff_fb2, (unsigned)s_ff_stride_px);
+    return 0;
+}
+
+uint8_t bsp_lvgl_port_fullframe_active(void)
+{
+    return s_ff_active;
+}
+
+uint32_t bsp_lvgl_port_strip_cnt(void)
+{
+    return s_ff_strip_cnt;   /* 整帧模式诊断：每帧条带数 = strips/frames */
 }
 
 void bsp_lvgl_port_async_enable(void)

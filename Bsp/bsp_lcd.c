@@ -278,6 +278,16 @@ int bsp_lcd_spi_loopback(void)
 
 uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len)
 {
+    /* 保守默认档 /128；要别的读速用 _p 变体（test_lcd_gscan 的频率梯） */
+    return bsp_lcd_read_reg_p(cmd, dummy, buf, len, SPI_BaudRatePrescaler_128);
+}
+
+/* 读回内核（分频可选）：诊断读 + GSCAN 高频轮询共用。
+ * presc 传 SPI_BaudRatePrescaler_x；快档能不能读对由调用方实验判定
+ * （SDO 回读时序裕量随档位变小，/128 是板证安全档） */
+uint8_t bsp_lcd_read_reg_p(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len,
+                           uint16_t presc)
+{
     uint8_t i;
 
     if ((buf == 0) || (len == 0))
@@ -287,8 +297,8 @@ uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len)
 
     lcd_dma_sync();                     /* §11 入口防御：读回要降速重配，先等 DMA 收尾 */
 
-    /* 读回时序裕量小，降到 /128 = 1.5625MHz，读完恢复写速度 */
-    spi1_reconfig(SPI_BaudRatePrescaler_128);
+    /* 读回时序裕量小，降速再读，读完恢复写速度 */
+    spi1_reconfig(presc);
     (void)SPI_I2S_ReceiveData(SPI1);               /* 清掉可能残留的 RX */
 
     LCD_DC_LOW();                                  /* 命令阶段 DC 低 */

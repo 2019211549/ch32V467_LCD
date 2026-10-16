@@ -27,7 +27,23 @@ void bsp_lvgl_port_init(uint8_t rotation);
  * 不调用则保持同步档（检查点 A 语义）；重复调用无副作用（幂等） */
 void bsp_lvgl_port_async_enable(void);
 
-/* 教学计数：从上电起 flush_cb 被调用的次数（= 已下发多少块画布） */
+/* 整帧 PSRAM 模式（T4 A/B 实验）：代替 bsp_lvgl_port_init 使用 —— LCD/
+ * lv_init 同一套，差别是画布换成 PSRAM 里两块整帧缓冲（RENDER_MODE_DIRECT
+ * 全局渲染，flush_cb 把脏区按 DMA 单笔上限切条带、逐条异步下发，全程
+ * 不退化同步）。之后照常调 bsp_lvgl_port_async_enable + lv_tick_set_cb。
+ * 返回 0 = 整帧模式生效；1 = PSRAM 自检不过已回退部分刷新（或本次上电
+ * 已按部分刷新初始化过）—— 回退时显示照常工作，只是对比没做成。幂等 */
+uint8_t bsp_lvgl_port_init_fullframe(uint8_t rotation);
+
+/* 当前是否整帧 DIRECT 模式（1=是；回退部分刷新后为 0） */
+uint8_t bsp_lvgl_port_fullframe_active(void);
+
+/* 整帧模式累计下发条带数（诊断：除以 flush 数 = 每帧条带数，320 宽
+ * 全屏一帧应为 3 条：102+102+36 行） */
+uint32_t bsp_lvgl_port_strip_cnt(void);
+
+/* 教学计数：flush_cb 被调用的次数。部分刷新=已下发多少块画布；
+ * 整帧 DIRECT=已完成多少帧（一次 flush_cb 一帧） */
 uint32_t bsp_lvgl_port_flush_cnt(void);
 
 /* 触摸 indev 初始化（T2）：bsp_touch + lv_indev(POINTER) + read_cb。

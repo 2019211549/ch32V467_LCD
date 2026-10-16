@@ -90,6 +90,11 @@ void bsp_lcd_wiring_check(void);
  * 返回读到的字节数。读回期间自动降到 /128(1.5625MHz)，读完恢复 */
 uint8_t bsp_lcd_read_reg(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len);
 
+/* 同上但读速可选（GSCAN 高频轮询/频率梯实验用）：presc 传
+ * SPI_BaudRatePrescaler_x。快档是否读得对由调用方验证，/128 为安全档 */
+uint8_t bsp_lcd_read_reg_p(uint8_t cmd, uint8_t dummy, uint8_t *buf, uint8_t len,
+                           uint16_t presc);
+
 /* 设置写入窗口 [x0,x1]x[y0,y1] 并进入 RAMWR 状态（含 0x2A/0x2B/0x2C）。
  * 坐标为当前方向的逻辑坐标（横屏时 x:0..319, y:0..239） */
 void bsp_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);

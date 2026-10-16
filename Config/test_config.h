@@ -46,8 +46,20 @@
 /* T3 横滑切页（硬件在环）：3 整屏彩色页 + scroll snap 居中吸附，验证
  * 跟手拖动 / 松手回弹 / 惯性翻页（iPhone 式分页）。3s 自动演示滑一页
  * （无手指也能看 snap），8s judge 判定行。与 PSG_TEST_TASK_UI 互斥
- * （两个任务各跑一套 LVGL 抢渲染），与 PSG_TEST_BSP_TOUCH 也互斥 */
-#define PSG_TEST_T3_SWIPE       1
+ * （两个任务各跑一套 LVGL 抢渲染），与 PSG_TEST_BSP_TOUCH 也互斥，
+ * 与 T4 也互斥（同款 UI 任务）—— A/B 对比时 T3/T4 轮流置 1 */
+#define PSG_TEST_T3_SWIPE       1   /* 回 24 行 SRAM 条带路径（T4 PSRAM 整帧
+                                       帧周期 36ms 判定太慢，暂弃，分支保留） */
+
+/* T4 整帧 PSRAM 滑动（硬件在环）：与 T3 同一套三页横滑 UI，画布换成
+ * PSRAM 两块 150K 整帧缓冲（DIRECT 全局渲染 + 脏区切条带逐条异步 DMA，
+ * 一帧 3 条带适配单笔 32768 半字上限）。judge@8s 量帧周期 avg/max ——
+ * 和 T3 的手感/flush 增速对比就是 A/B 结论。PSRAM 不在线自动回退部分
+ * 刷新（judge 判 ff=0 FAIL，不黑屏）。互斥同 T3。
+ * 2026-10-16 板证：机制成立（18帧/54条带 DMA 全对），但 avg 36ms/28fps
+ * 比 T3 慢（refr_sync_areas 拷贝 + 每帧整帧传输），后续撕裂同步走 T3
+ * 的 24 行 SRAM 条带路径，本用例留作对照 */
+#define PSG_TEST_T4_FULLFRAME   0
 
 /* TE 命令探索（硬件在环）：本模组没焊 TE 引脚，但 TEON/TEOFF 的生效
  * 与否可从 RDDST(0x09) 状态字读回验证——本用例打全套 TE 命令并逐字节
@@ -59,6 +71,20 @@
  * 三区间图案扫描 + 地址线别名自检 + 带宽粗测。与其它用例零耦合
  * （不动 Link.ld/LVGL）。init FAIL 也会跑完诊断打印（失配形态定位） */
 #define PSG_TEST_BSP_PSRAM      1
+
+/* GSCAN(0x45) 扫描行验证（硬件在环，需 SDO 接好）：读通路自检 + 应答门 +
+ * 锯齿/回绕周期 T_scan + 频率梯（四档读速找最快可信档）+ 斜率自洽。
+ * 纯测量不做同步（回绕点=帧头?下阶段翻色标定）。跑在调度器前，
+ * 与 T4 兼容可同开；只读命令零残留 */
+#define PSG_TEST_LCD_GSCAN      1
+
+/* 翻色标定（硬件在环，需人眼看屏/慢动作拍摄）：阶段A 横带基线（已知斜
+ * 撕裂线，对照）；阶段B 16列竖板同向追扫 δ0=1650µs（写落后扫描一整板
+ * 785µs+Δ+余量，预期零撕裂）；阶段C δ0 阶梯（斜纹消失的最小 δ0* ≈
+ * 785+Δ → 反解回绕-帧头偏移 Δ）。竖板 = 乒乓双板 SRAM + 每板窗口 +
+ * 异步 DMA（生产目标形态）。观察结果靠人发回，断言只管机械量。跑在
+ * 调度器前，t3 之前 */
+#define PSG_TEST_LCD_FLIPCAL    1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -75,8 +101,11 @@
 #define PSG_TEST_TASK_UI        0
 #define PSG_TEST_BSP_TOUCH      0
 #define PSG_TEST_T3_SWIPE       0
+#define PSG_TEST_T4_FULLFRAME   0
 #define PSG_TEST_TE_EXPLORE     0
 #define PSG_TEST_BSP_PSRAM      0
+#define PSG_TEST_LCD_GSCAN      0
+#define PSG_TEST_LCD_FLIPCAL    0
 
 #endif
 #endif /* TEST_CONFIG_H */

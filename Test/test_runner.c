@@ -23,10 +23,13 @@ void test_sanity(void);
 void test_bsp_psram(void);
 void test_bsp_lcd(void);
 void test_lcd_perf(void);
+void test_lcd_gscan(void);
+void test_lcd_flipcal(void);
 void test_lvgl_hello(void);
 void test_task_ui(void);
 void test_bsp_touch(void);
 void test_t3_swipe(void);
+void test_t4_fullframe_swipe(void);
 void test_te_explore(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
@@ -51,6 +54,16 @@ int test_runner_run(void)
      * 跑完诊断打印（失配形态是降档定位的依据） */
     TEST_RUN(test_bsp_psram);
 #endif
+#if PSG_TEST_LCD_GSCAN
+    /* 纯测量用例（调度器前跑完）：0x45 扫描行可行性 + T_scan 标定，
+     * 喂给软件同步设计；只读命令零残留 */
+    TEST_RUN(test_lcd_gscan);
+#endif
+#if PSG_TEST_LCD_FLIPCAL
+    /* 光学标定用例（调度器前跑完，~12s 需人眼看屏）：回绕对齐翻色验 S2
+     * 前提 + δ 阶梯撕裂线反解线周期/相位；结论靠人工发回 */
+    TEST_RUN(test_lcd_flipcal);
+#endif
 #if PSG_TEST_BSP_LCD
     TEST_RUN(test_bsp_lcd);
 #endif
@@ -72,6 +85,11 @@ int test_runner_run(void)
 #if PSG_TEST_T3_SWIPE
     /* 交互用例：3s 自动演示 snap，8s judge 判定行；之后人工手滑验手感 */
     TEST_RUN(test_t3_swipe);
+#endif
+#if PSG_TEST_T4_FULLFRAME
+    /* 交互用例（A/B 的 B 组）：同 T3 的 UI，PSRAM 整帧 DIRECT + 条带异步；
+     * 8s judge 打帧周期 avg/max，和 T3 对比 */
+    TEST_RUN(test_t4_fullframe_swipe);
 #endif
 #if PSG_TEST_TE_EXPLORE
     /* 探索用例：TE 命令打进去、RDDST 状态读回来（无 TE 引脚的替代观察口） */
