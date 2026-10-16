@@ -28,6 +28,7 @@
 #include "semphr.h"
 #include <string.h>         /* memset：上电清 PSRAM 帧缓冲 */
 #include "bsp_psram.h"      /* 整帧模式的帧缓冲窗口（BSP_PSRAM_WINDOW_BASE） */
+#include "bsp_lcd_scan.h"   /* 竖板追扫模式：staging + GSCAN 同步追扫 */
 
 /* 部分刷新画布：按最大逻辑宽 320（横屏）x 24 行 x 2 字节 = 15K。
  * LVGL 按"当前 hor_res"自动折算每块行数：竖屏 240 宽时每块 32 行，
@@ -320,6 +321,87 @@ uint8_t bsp_lvgl_port_fullframe_active(void)
 uint32_t bsp_lvgl_port_strip_cnt(void)
 {
     return s_ff_strip_cnt;   /* 整帧模式诊断：每帧条带数 = strips/frames */
+}
+
+/* ==================== 竖板追扫模式（生产路径，2026-10-16 标定收官） ====================
+ * 背景：24 行横带写入与面板扫描轴垂直，数学上必有斜向撕裂（v=0.764u，
+ * 板证）；本模式改为与扫描同轴的 16 列竖板写入 + GSCAN 回绕对齐。
+ * 标定参数（Test/test_lcd_flipcal 板证）：扫描=横屏左→右 52.33µs/列，
+ * 回绕早于可见帧头 Δ≈1.1ms；"写一块板(819µs)整段不得与扫描在该板内
+ * 重叠" → 起写 δ0=2100µs（零撕裂阈值 1950+余量）、板配速 845µs
+ * → 整屏颜色在扫描趟边界统一翻转（帧量化，等效 vsync 页翻转）。
+ * 数据通路：LVGL 24 行画布 --band_put--> PSRAM 整帧 staging（staging 兼任
+ * 持久帧缓冲：脏区外内容自动保序、无脏区不追扫）→ 帧末 flush_is_last
+ * 时 frame_send：等回绕+δ0，20 板 gather(PSRAM→SRAM 乒乓板) ∥ DMA 流水。
+ * 时序：整帧 = 渲染 + 回绕等待(0~16.7ms) + 追扫 ~20ms ⇒ 全屏更新周期
+ * 2 帧（~30fps 上限）—— 零撕裂的代价；单画布足够（复用画布从不等 LCD） */
+static uint8_t s_sc_active;   /* 1 = 竖板追扫模式已生效 */
+
+static void sc_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    (void)bsp_lcd_scan_band_put((uint16_t)area->x1, (uint16_t)area->y1,
+                                (uint16_t)area->x2, (uint16_t)area->y2,
+                                (const uint16_t *)px_map);
+    s_flush_cnt++;
+
+    /* 帧末：staging 已完整 → 追扫上屏（阻塞：回绕等待+20 板流水）。
+     * 失败只进诊断计数（stats），不挂 UI —— 下一帧照常重试 */
+    if (lv_display_flush_is_last(disp))
+    {
+        (void)bsp_lcd_scan_frame_send();
+    }
+
+    lv_display_flush_ready(disp);   /* 画布立即可复用：LCD 写入全来自 staging */
+}
+
+uint8_t bsp_lvgl_port_init_slab(uint8_t rotation)
+{
+    if (s_inited)
+    {
+        /* 幂等：报当前模式（同 init_fullframe 语义） */
+        return (s_sc_active != 0) ? 0 : 1;
+    }
+
+    bsp_lcd_init();                    /* scan_init 的 GSCAN 测量依赖 SPI 就绪 */
+    bsp_lcd_set_rotation(rotation);
+
+    if (bsp_lcd_scan_init() != 0)
+    {
+        PSG_LOG("lvgl_port: scan-init 失败，竖板模式回退部分刷新\r\n");
+        bsp_lvgl_port_init(rotation);  /* s_inited 仍 0，走完整部分刷新初始化 */
+        return 1;
+    }
+
+    s_inited = 1;
+
+    lv_init();
+
+    /* 追扫 DMA 的收尾（CS 释放/DFF 复位/done 计数）靠 TC 中断：注册空
+     * 回调占位；之后 async_enable 重注册信号量回调也无害——本模式
+     * flush_cb 恒同步 ready，wait_cb 永不会被调到 */
+    bsp_lcd_dma_async_enable(0);
+
+    s_disp = lv_display_create(bsp_lcd_width(), bsp_lcd_height());
+    if (s_disp == NULL)
+    {
+        return 1;   /* 同部分刷新档：内存池不够，调用方断言兜底 */
+    }
+
+    lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_flush_cb(s_disp, sc_flush_cb);
+    /* 单画布（双画布无收益：渲染与追扫在本模式是串行的，画布复用也
+     * 从不等 LCD —— 帧内流水在 scan 模块 gather∥DMA 里，不在画布层） */
+    lv_display_set_buffers(s_disp, s_draw_buf, NULL, sizeof(s_draw_buf),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    s_sc_active = 1;
+    PSG_LOG("lvgl_port: 竖板追扫模式生效（staging=PSRAM+0x80000）\r\n");
+    return 0;
+}
+
+uint8_t bsp_lvgl_port_slab_active(void)
+{
+    return s_sc_active;
 }
 
 void bsp_lvgl_port_async_enable(void)

@@ -48,8 +48,11 @@
  * （无手指也能看 snap），8s judge 判定行。与 PSG_TEST_TASK_UI 互斥
  * （两个任务各跑一套 LVGL 抢渲染），与 PSG_TEST_BSP_TOUCH 也互斥，
  * 与 T4 也互斥（同款 UI 任务）—— A/B 对比时 T3/T4 轮流置 1 */
-#define PSG_TEST_T3_SWIPE       1   /* 回 24 行 SRAM 条带路径（T4 PSRAM 整帧
-                                       帧周期 36ms 判定太慢，暂弃，分支保留） */
+#define PSG_TEST_T3_SWIPE       1   /* 2026-10-16 起走竖板追扫生产路径：
+                                       bsp_lvgl_port_init_slab（PSRAM staging +
+                                       GSCAN 回绕对齐 + 16 列板 DMA 流水，板证
+                                       零撕裂）；PSRAM/GSCAN 不具备自动回退
+                                       24 行部分刷新（judge 行 slab=0 标出） */
 
 /* T4 整帧 PSRAM 滑动（硬件在环）：与 T3 同一套三页横滑 UI，画布换成
  * PSRAM 两块 150K 整帧缓冲（DIRECT 全局渲染 + 脏区切条带逐条异步 DMA，

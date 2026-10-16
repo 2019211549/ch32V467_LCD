@@ -38,6 +38,19 @@ uint8_t bsp_lvgl_port_init_fullframe(uint8_t rotation);
 /* 当前是否整帧 DIRECT 模式（1=是；回退部分刷新后为 0） */
 uint8_t bsp_lvgl_port_fullframe_active(void);
 
+/* 竖板追扫模式（生产路径，代替 bsp_lvgl_port_init 使用）：LCD/lv_init 同
+ * 一套，差别是 flush 链路换为 "24 行画布横带 → PSRAM 整帧 staging → 帧末
+ * GSCAN 回绕对齐 + 16 列竖板 gather/DMA 流水追扫"（标定参数与板证零撕裂
+ * 记录见 bsp_lcd_scan.c 文件头；2026-10-16 收官）。整屏更新帧量化（等效
+ * vsync 页翻转，~30fps 上限），无脏区不追扫。不需要 async_enable（调了
+ * 无害）。返回 0 = 竖板模式生效；1 = PSRAM/GSCAN 不具备，已回退部分刷新
+ * （显示照常，撕裂回到 24 行横带形态）。横屏 320x240 专用（标定坐标系）。
+ * 幂等 */
+uint8_t bsp_lvgl_port_init_slab(uint8_t rotation);
+
+/* 当前是否竖板追扫模式（1=是；回退部分刷新后为 0） */
+uint8_t bsp_lvgl_port_slab_active(void);
+
 /* 整帧模式累计下发条带数（诊断：除以 flush 数 = 每帧条带数，320 宽
  * 全屏一帧应为 3 条：102+102+36 行） */
 uint32_t bsp_lvgl_port_strip_cnt(void);

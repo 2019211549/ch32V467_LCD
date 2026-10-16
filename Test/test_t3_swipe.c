@@ -32,6 +32,7 @@
 #include "lvgl.h"
 #include "test_framework.h"
 #include "bsp_lvgl_port.h"
+#include "bsp_lcd_scan.h"    /* 竖板追扫统计（判定行/心跳行用） */
 #include "bsp_lcd.h"
 #include "bsp_uart.h"
 
@@ -99,14 +100,28 @@ static void t3_auto_cb(lv_timer_t *timer)
 static void t3_ui_task(void *arg)
 {
     TickType_t last_stat = xTaskGetTickCount();
+    uint8_t sc_rc;
     uint8_t touch_rc;
     uint8_t i;
 
     (void)arg;
 
-    /* 移植层三件套 + tick + 触摸（全幂等，顺序同 task_ui） */
-    bsp_lvgl_port_init(LCD_ROT_LANDSCAPE);
-    bsp_lvgl_port_async_enable();
+    /* 移植层三件套 + tick + 触摸（全幂等，顺序同 task_ui）。
+     * T3 走竖板追扫生产路径：PSRAM staging + GSCAN 回绕对齐 + 16 列板
+     * DMA 流水（板证零撕裂，参数见 bsp_lcd_scan.c）；PSRAM/GSCAN 不具备
+     * 自动回退 24 行部分刷新（撕裂回到斜线形态，判定行会标出） */
+    sc_rc = bsp_lvgl_port_init_slab(LCD_ROT_LANDSCAPE);
+    if (sc_rc == 0)
+    {
+        uart_printf("t3: 竖板追扫模式生效（整屏更新帧量化 ~30fps 上限，"
+                    "滑动应全程无斜线）\r\n");
+    }
+    else
+    {
+        uart_printf("t3: 竖板未生效 rc=%d，走 24 行部分刷新（斜线撕裂预期内）\r\n",
+                    (int)sc_rc);
+    }
+    bsp_lvgl_port_async_enable();   /* 竖板模式下无害（wait_cb 不会触发） */
     lv_tick_set_cb(t3_tick_cb);
     touch_rc = bsp_lvgl_port_touch_init();
     s_touch_ok = (touch_rc == 0) ? 1 : 0;
@@ -182,6 +197,17 @@ static void t3_ui_task(void *arg)
                         (unsigned long)bsp_lcd_dma_fallback_cnt(),
                         (unsigned long)terr,
                         (unsigned long)uxTaskGetStackHighWaterMark(NULL));
+            if (bsp_lcd_scan_ready() != 0)     /* 竖板模式专属行 */
+            {
+                uint32_t sf = 0, savg = 0, smax = 0, sga = 0, sto = 0;
+
+                bsp_lcd_scan_stats(&sf, &savg, &smax, &sga, &sto);
+                uart_printf("t3 stat: 竖板 帧%lu 追扫avg %lums max %lums "
+                            "gather/帧%luus 超时%lu\r\n",
+                            (unsigned long)sf, (unsigned long)(savg / 1000u),
+                            (unsigned long)(smax / 1000u),
+                            (unsigned long)sga, (unsigned long)sto);
+            }
             last_stat = xTaskGetTickCount();
         }
     }
@@ -210,13 +236,32 @@ static void judge_task(void *arg)
     TEST_ASSERT_EQ_INT(err, 0);
     TEST_ASSERT_EQ_INT(bsp_lcd_dma_fallback_cnt(), 0);
 
-    uart_printf("[%s] test_t3_swipe(judge@8s): flush=%lu snap=%d touch=%d dma %lu/%lu err=%lu fb=%lu\r\n",
+    /* 竖板追扫专属判定（回退部分刷新时 scan_ready=0，整段跳过）：
+     * 8s 内初始渲染 + 500ms 自动滑动画至少攒出几帧追扫；超时=回绕/DMA
+     * 异常，无撕裂结论不成立 */
+    if (bsp_lcd_scan_ready() != 0)
+    {
+        uint32_t sf = 0, savg = 0, smax = 0, sga = 0, sto = 0;
+
+        bsp_lcd_scan_stats(&sf, &savg, &smax, &sga, &sto);
+        TEST_ASSERT(sf >= 5);
+        TEST_ASSERT_EQ_INT(0, (int)sto);
+
+        uart_printf("t3 slab(judge@8s): 帧%lu 追扫avg %lums max %lums "
+                    "gather/帧%luus 超时%lu —— 滑动无斜线即收官\r\n",
+                    (unsigned long)sf, (unsigned long)(savg / 1000u),
+                    (unsigned long)(smax / 1000u),
+                    (unsigned long)sga, (unsigned long)sto);
+    }
+
+    uart_printf("[%s] test_t3_swipe(judge@8s): flush=%lu snap=%d touch=%d dma %lu/%lu err=%lu fb=%lu slab=%d\r\n",
                 (test_fail_cnt == fail0) ? " OK " : "FAIL",
                 (unsigned long)flush,
                 (int)s_scroll_ok, (int)s_touch_ok,
                 (unsigned long)start, (unsigned long)done,
                 (unsigned long)err,
-                (unsigned long)bsp_lcd_dma_fallback_cnt());
+                (unsigned long)bsp_lcd_dma_fallback_cnt(),
+                (int)bsp_lvgl_port_slab_active());
 
     vTaskDelete(NULL);                  /* 裁判退场，界面留着给人滑 */
 }
