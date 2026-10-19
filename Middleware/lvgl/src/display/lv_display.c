@@ -589,6 +589,30 @@ void lv_display_set_render_mode(lv_display_t * disp, lv_display_render_mode_t re
     disp->render_mode = render_mode;
 }
 
+void lv_display_set_colmajor_render(lv_display_t * disp, bool en)
+{
+    if(disp == NULL) {
+        LOG_NULL_DISPLAY_DEPRECATED_MESSAGE();
+        disp = lv_display_get_default();
+    }
+    LV_CHECK_ARG(disp != NULL, return);
+#if LV_USE_COLMAJOR_RENDER
+    disp->colmajor_render = en ? 1 : 0;
+#else
+    LV_LOG_WARN("lv_display_set_colmajor_render() ignored: LV_USE_COLMAJOR_RENDER is 0");
+#endif
+}
+
+bool lv_display_get_colmajor_render(lv_display_t * disp)
+{
+    if(disp == NULL) {
+        LOG_NULL_DISPLAY_DEPRECATED_MESSAGE();
+        disp = lv_display_get_default();
+    }
+    if(disp == NULL) return false;
+    return disp->colmajor_render ? true : false;
+}
+
 
 lv_display_flush_cb_t lv_display_get_flush_cb(lv_display_t * disp)
 {
@@ -619,7 +643,7 @@ void lv_display_set_flush_wait_cb(lv_display_t * disp, lv_display_flush_wait_cb_
     }
     LV_CHECK_ARG(disp != NULL, return);
 
-    disp->flush_wait_cb = wait_cb;  //½«»Øµ÷º¯Êý´«Èëµ½dispÖÐµÄ»Øµ÷º¯Êý²ÎÊýÖÐ
+    disp->flush_wait_cb = wait_cb;  //ï¿½ï¿½ï¿½Øµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ëµ½dispï¿½ÐµÄ»Øµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 }
 
 void lv_display_set_sync_cb(lv_display_t * disp, lv_display_sync_cb_t sync_cb)

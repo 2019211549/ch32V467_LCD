@@ -110,8 +110,20 @@
  * + 每周期首条 GSCAN 回绕对齐（δ0=0 同帧翻色）。UI=一个 screen+3 容器
  * 竖排 snap 翻页（竖屏坐标，屏上观感左右滑）。3s 自动演示，8s judge
  * 判定行（含 cm 帧周期/ sync_miss），之后手滑与 T3 对比手感/A-B 结论。
- * 与 T3/T4/BSP_TOUCH 互斥 */
-#define PSG_TEST_T5_COLMAJOR_SWIPE 1
+ * 与 T3/T4/BSP_TOUCH 互斥
+ * 2026-10-19 置 0：T6 横屏课独占固件（T5 板证顺滑已收官） */
+#define PSG_TEST_T5_COLMAJOR_SWIPE 0
+
+/* T6 列优先横屏直通滑动（硬件在环，需 SDO 接好）：T5 物理底座 + 横屏
+ * 320x240 声明兼得 —— LVGL 内核补丁 LV_USE_COLMAJOR_RENDER 让 PARTIAL
+ * 脏区按列切 16 宽 x 全高竖条，flush_cb 转置(行主序→列主序) + 交换参数
+ * 窗口 + 乒乓双缓冲异步 DMA（发板 k 同时渲染板 k+1，转置完立即
+ * flush_ready 释放单画布），周期首条排干在飞 DMA 后 GSCAN 回绕对齐
+ * （δ0=0 同帧翻色，物理同 T5）。UI=横排 3 页 + 正向文字 + F 字标 +
+ * 四角色标 + OK 按钮（对照 T5 的横躺+镜像文本）。3s 自动演示，8s judge
+ * （含 cmlm 帧周期/sync_miss/转置 max/块间隙 avg-max，间隙 avg<~42µs
+ * = 渲染+转置藏进 819µs DMA 影子）。与 T3/T4/T5/BSP_TOUCH 互斥 */
+#define PSG_TEST_T6_COLMAJOR_LM 1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -135,6 +147,7 @@
 #define PSG_TEST_LCD_FLIPCAL    0
 #define PSG_TEST_LCD_COLMAJOR   0
 #define PSG_TEST_T5_COLMAJOR_SWIPE 0
+#define PSG_TEST_T6_COLMAJOR_LM 0
 
 #endif
 #endif /* TEST_CONFIG_H */

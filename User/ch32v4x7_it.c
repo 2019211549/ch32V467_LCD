@@ -57,8 +57,11 @@ void NMI_Handler(void)
  *********************************************************************/
 void HardFault_Handler(void)
 {
-  uart_printf("HardFault: mcause=0x%x mepc=0x%x\r\n",
-              (unsigned)__get_MCAUSE(), (unsigned)__get_MEPC());
+  /* temp diagnostic: mtval = faulting access address (misaligned case gives
+   * the bad pointer directly); remove together with the probe set */
+  uart_printf("HardFault: mcause=0x%x mepc=0x%x mtval=0x%x\r\n",
+              (unsigned)__get_MCAUSE(), (unsigned)__get_MEPC(),
+              (unsigned)__get_MTVAL());
   while (1)
   {
   }

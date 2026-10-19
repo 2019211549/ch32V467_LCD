@@ -309,6 +309,23 @@ void lv_display_set_3rd_draw_buffer(lv_display_t * disp, lv_draw_buf_t * buf3);
 void lv_display_set_render_mode(lv_display_t * disp, lv_display_render_mode_t render_mode);
 
 /**
+ * COLMAJOR_RENDER patch: let PARTIAL render mode slice the invalidated areas
+ * into full-height vertical strips (x-ascending) instead of full-width rows,
+ * matching a column-scan display driver. Takes effect only when
+ * LV_USE_COLMAJOR_RENDER is enabled in lv_conf.h.
+ * @param disp      pointer to a display
+ * @param en        true: column-major strip scheduling
+ */
+void lv_display_set_colmajor_render(lv_display_t * disp, bool en);
+
+/**
+ * Get the COLMAJOR_RENDER flag, see lv_display_set_colmajor_render().
+ * @param disp      pointer to a display
+ * @return          true if column-major strip scheduling is active
+ */
+bool lv_display_get_colmajor_render(lv_display_t * disp);
+
+/**
  * Set the flush callback which will be called to copy the rendered image to the display.
  * @param disp      pointer to a display
  * @param flush_cb  the flush callback (`px_map` contains the rendered image as raw pixel map and it should be copied to `area` on the display)

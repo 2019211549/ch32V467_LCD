@@ -33,6 +33,7 @@ void test_t4_fullframe_swipe(void);
 void test_te_explore(void);
 void test_lcd_colmajor(void);
 void test_t5_colmajor_swipe(void);
+void test_t6_colmajor_landscape(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
 #define TEST_RUN(fn)                                                  \
@@ -107,6 +108,12 @@ int test_runner_run(void)
     /* LCD 深入学习 3（列优先+LVGL 联测）：竖屏声明直通模式滑动切页，
      * 3s 自动演示，8s judge（含 cm 帧周期/sync_miss），之后手滑对比 T3 */
     TEST_RUN(test_t5_colmajor_swipe);
+#endif
+#if PSG_TEST_T6_COLMAJOR_LM
+    /* LCD 深入学习 4（列优先横屏直通）：LVGL 内核列切片补丁 + 转置/乒乓
+     * DMA 流水，横屏声明下文字控件正向 + 追扫无撕裂，3s 自动演示，8s
+     * judge（含 cmlm 帧周期/间隙统计），之后手滑与 T3/T5 对比即收官 */
+    TEST_RUN(test_t6_colmajor_landscape);
 #endif
 
     uart_printf("===== %lu passed, %lu failed =====\r\n\r\n",

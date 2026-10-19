@@ -43,10 +43,10 @@ struct _lv_display_t {
      *--------------------*/
 
     /** Horizontal resolution.*/
-    int32_t hor_res;  //Ë®Æ½·Ö±æÂÊ
+    int32_t hor_res;  //Ë®Æ½ï¿½Ö±ï¿½ï¿½ï¿½
 
     /** Vertical resolution.*/
-    int32_t ver_res;  // ´¹Ö±·Ö±æÂÊ
+    int32_t ver_res;  // ï¿½ï¿½Ö±ï¿½Ö±ï¿½ï¿½ï¿½
 
     /** Horizontal resolution of the full / physical display. Set to -1 for fullscreen mode.*/
     int32_t physical_hor_res;
@@ -116,6 +116,9 @@ struct _lv_display_t {
     lv_ll_t sync_areas;
 
     lv_display_render_mode_t render_mode;
+    uint32_t colmajor_render : 1;    /**< COLMAJOR_RENDER patch: 1 = PARTIAL mode slices areas into
+                                      *   full-height vertical strips (x-ascending) instead of
+                                      *   full-width rows. See lv_refr.c get_max_col(). */
     uint32_t antialiasing : 1;       /**< 1: anti-aliasing is enabled on this display.*/
     uint32_t tile_cnt     : 8;       /**< Divide the display buffer into these number of tiles */
     uint32_t stride_is_auto : 1;     /**< 1: The stride of the buffers was not set explicitly. */

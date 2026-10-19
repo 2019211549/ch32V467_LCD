@@ -7,6 +7,8 @@
  *      INCLUDES
  *********************/
 #include "lv_refr_private.h"
+#include "bsp_uart.h"      /* 临时诊断：HardFault 定位用，收 bug 后删 */
+extern void dbg_lv_snapshot(char tag);   /* 临时诊断（lv_draw.c），收 bug 后删 */
 #include "lv_obj_draw_private.h"
 #include "../misc/lv_area_private.h"
 #include "../draw/sw/lv_draw_sw_mask_private.h"
@@ -44,6 +46,9 @@ static void refr_area(const lv_area_t * area_p, int32_t y_offset);
 static void refr_configured_layer(lv_layer_t * layer);
 static void refr_obj_and_children(lv_layer_t * layer, lv_obj_t * top_obj);
 static uint32_t get_max_row(lv_display_t * disp, int32_t area_w, int32_t area_h);
+#if LV_USE_COLMAJOR_RENDER
+static uint32_t get_max_col(lv_display_t * disp, int32_t area_w, int32_t area_h);
+#endif
 static void draw_buf_flush(lv_display_t * disp);
 static void call_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map);
 static void wait_for_flushing(lv_display_t * disp);
@@ -824,6 +829,66 @@ static void refr_invalid_areas(void)
 
         lv_area_t inv_a = disp_refr->inv_areas[i];
         if(disp_refr->render_mode == LV_DISPLAY_RENDER_MODE_PARTIAL) {
+#if LV_USE_COLMAJOR_RENDER /* COLMAJOR_RENDER patch: column-major slicing, see get_max_col() */
+            if(disp_refr->colmajor_render) {
+                /*Column-major twin of the row logic below: slice the area into
+                 *full-height vertical strips, x ascending (matches a column-scan
+                 *display driver). Buffer capacity is spent on the height here,
+                 *so the strip width comes from get_max_col().*/
+                static uint32_t dbg_refr_n;   /* 临时诊断：HardFault 定位用，收 bug 后删 */
+                int32_t w = lv_area_get_width(&inv_a);
+                int32_t h = lv_area_get_height(&inv_a);
+
+                int32_t max_col = get_max_col(disp_refr, w, h);
+
+                int32_t col;
+                int32_t col_last = 0;
+                lv_area_t sub_area;
+                sub_area.y1 = inv_a.y1;
+                sub_area.y2 = inv_a.y2;
+                if(dbg_refr_n < 8u) {
+                    uart_printf("refD%lu: inv(%d,%d)-(%d,%d) max_col=%d 池=%d\r\n",
+                                (unsigned long)dbg_refr_n,
+                                (int)inv_a.x1, (int)inv_a.y1, (int)inv_a.x2, (int)inv_a.y2,
+                                (int)max_col, (int)lv_mem_test());
+                    dbg_lv_snapshot('R');   /* 临时诊断：进刷新时的单元链快照 */
+                }
+                for(col = inv_a.x1; col + max_col - 1 <= inv_a.x2; col += max_col) {
+                    /*Calc. the next x coordinates of draw_buf*/
+                    sub_area.x1 = col;
+                    sub_area.x2 = col + max_col - 1;
+                    if(sub_area.x2 > inv_a.x2) sub_area.x2 = inv_a.x2;
+                    col_last = sub_area.x2;
+                    if(inv_a.x2 == col_last) disp_refr->last_part = 1;
+                    if(dbg_refr_n < 8u) {
+                        uart_printf("refD%lu: sub(%d,%d)-(%d,%d) 渲染前 池=%d\r\n",
+                                    (unsigned long)dbg_refr_n,
+                                    (int)sub_area.x1, (int)sub_area.y1,
+                                    (int)sub_area.x2, (int)sub_area.y2,
+                                    (int)lv_mem_test());
+                    }
+                    refr_area(&sub_area, 0);
+                    if(dbg_refr_n < 8u) {
+                        uart_printf("refD%lu: 渲染后 池=%d\r\n",
+                                    (unsigned long)dbg_refr_n, (int)lv_mem_test());
+                        dbg_refr_n++;
+                    }
+                    draw_buf_flush(disp_refr);
+                }
+
+                /*If the last x coordinates are not handled yet ...*/
+                if(inv_a.x2 != col_last) {
+                    /*Calc. the next x coordinates of draw_buf*/
+                    sub_area.x1 = col;
+                    sub_area.x2 = inv_a.x2;
+                    disp_refr->last_part = 1;
+                    refr_area(&sub_area, 0);
+                    draw_buf_flush(disp_refr);
+                }
+            }
+            else
+#endif
+            {
             /*Calculate the max row num*/
             int32_t w = lv_area_get_width(&inv_a);
             int32_t h = lv_area_get_height(&inv_a);
@@ -858,6 +923,7 @@ static void refr_invalid_areas(void)
                 y_off += lv_area_get_height(&sub_area);
                 draw_buf_flush(disp_refr);
             }
+            } /* end of stock row-major block (COLMAJOR_RENDER patch) */
         }
         else if(disp_refr->render_mode == LV_DISPLAY_RENDER_MODE_FULL ||
                 disp_refr->render_mode == LV_DISPLAY_RENDER_MODE_DIRECT) {
@@ -1394,6 +1460,58 @@ static uint32_t get_max_row(lv_display_t * disp, int32_t area_w, int32_t area_h)
 
     return max_row;
 }
+
+#if LV_USE_COLMAJOR_RENDER
+/**
+ * Column-major twin of get_max_row(): how many columns of a full-height strip
+ * fit into the partial draw buffer. The strip width is the unknown here, so
+ * the capacity math is plain pixel bytes — exact while LV_DRAW_BUF_STRIDE_ALIGN
+ * is 1 (project default; larger alignments only round a row up by <align bytes).
+ */
+static uint32_t get_max_col(lv_display_t * disp, int32_t area_w, int32_t area_h)
+{
+    lv_color_format_t cf = disp->color_format;
+    uint32_t px_size = lv_color_format_get_size(cf);
+    uint32_t overhead = LV_COLOR_INDEXED_PALETTE_SIZE(cf) * sizeof(lv_color32_t);
+
+    if(px_size == 0 || area_h <= 0) {
+        LV_LOG_WARN("Invalid pixel size or area height. Can't slice by columns");
+        return 0;
+    }
+
+    int32_t max_col = (uint32_t)(disp->buf_act->data_size - overhead) / (area_h * px_size);
+
+    if(max_col > area_w) max_col = area_w;
+    if(max_col < 1) max_col = 1;
+
+    /*Round down the columns of draw_buf if rounding is added (twin of the
+     *height rounding loop in get_max_row())*/
+    lv_area_t tmp;
+    tmp.y1 = 0;
+    tmp.y2 = 0;
+    tmp.x1 = 0;
+
+    int32_t w_tmp = max_col;
+    do {
+        tmp.x2 = w_tmp - 1;
+        lv_display_send_event(disp_refr, LV_EVENT_INVALIDATE_AREA, &tmp);
+
+        /*If this width fits into `max_col` then fine*/
+        if(lv_area_get_width(&tmp) <= max_col) break;
+
+        /*Decrement the width of the area until it fits into `max_col` after rounding*/
+        w_tmp--;
+    } while(w_tmp > 0);
+
+    if(w_tmp <= 0) {
+        LV_LOG_WARN("Can't set draw_buf width using the round function. (Wrong round_cb or too "
+                    "small draw_buf)");
+        return 0;
+    }
+
+    return lv_area_get_width(&tmp);
+}
+#endif /* LV_USE_COLMAJOR_RENDER */
 
 /**
  * Flush the content of the draw buffer

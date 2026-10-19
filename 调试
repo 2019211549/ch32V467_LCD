@@ -1,36 +1,20 @@
-只设置一次 16 列窗口，再让 DMA 发送列优先数据
+SystemClk:150000000
+ChipID:46750012
 
-这是你最希望实现的：
+===== PSG unit tests =====
+[RUN ] test_t6_colmajor_landscape
+test_t6_colmajor_landscape: UI+judge 已建，3s 自动演示，8s 判定行，之后随便手滑
+[ OK ] test_t6_colmajor_landscape
+===== 2 passed, 0 failed =====
 
-设置窗口 X=0～15，Y=0～239
-
-一次DMA：
-  先发第0列240像素
-  再发第1列240像素
-  ...
-  最后发第15列240像素
-
-在当前 MADCTL=0x60 的自动寻址方式下，不能仅仅把 SRAM 数据改成列优先排列，就达到这个效果。
-
-原因是 DMA 只是连续发送 RGB565 像素，不会告诉 ST7789“这个像素属于第几列”。
-
-假设 DMA 发来：
-
-P(0,0)
-P(0,1)
-P(0,2)
-...
-
-但 ST7789 的地址计数器仍按逻辑行优先推进：
-
-写到 (0,0)
-写到 (1,0)
-写到 (2,0)
-...
-
-那么图像内容就会错位。
-
-ST7789P3 手册的 RAM 地址组织图，也明确展示了不同 MV/MX/MY 组合下，输入数据与内部 GRAM 地址之间的对应关系。
-LaskaKit
-
-因此，在当前地址映射下，一个 16 列矩形窗口并没有独立的“切换为逻辑列优先填充”选项。
+lvgl_port: 列优先横屏直通生效（320x240 声明 MADCTL=0x40 板宽=16列 转置+乒乓DMA GSCAN 回绕对齐）
+SI: head=0x20001640 tlsf=0x20000a1c next=0x0
+t6: UI built 池=1 free=18780
+SB: head=0x20001640 tlsf=0x20000a1c next=0x0
+refD0: inv(0,0)-(319,239) max_col=16 池=1
+SR: head=0x20001640 tlsf=0x20000a1c next=0x0
+refD0: sub(0,0)-(15,239) 渲染前 池=1
+SF: head=0x20001640 tlsf=0x20000a1c next=0x0
+SF: head=0x20001640 tlsf=0x20000a1c next=0x0
+SF: head=0x20001640 tlsf=0x20000a1c next=0x0
+HardFault: mcause=0x4 mepc=0x282de mtval=0x1c93a

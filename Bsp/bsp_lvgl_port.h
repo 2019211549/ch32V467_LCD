@@ -73,6 +73,30 @@ uint8_t bsp_lvgl_port_cm_active(void);
 void bsp_lvgl_port_cm_stats(uint32_t *frames, uint32_t *avg_period_us,
                             uint32_t *max_period_us, uint32_t *sync_miss);
 
+/* 列优先横屏直通模式（T6，代替 bsp_lvgl_port_init 使用，无参数——方向固定）：
+ * LVGL 横屏 320x240 声明（控件/文字正向）+ LV_USE_COLMAJOR_RENDER 内核
+ * 补丁让 PARTIAL 脏区按列切 16 宽 x 全高竖条 + flush_cb 转置成列主序 +
+ * 交换参数窗口 + 乒乓双缓冲异步 DMA（发板 k 同时渲染板 k+1），撕裂同步
+ * 同 T5（周期首条 GSCAN 回绕对齐 δ0=0 + 板背靠背 → 等效 vsync ~60fps）。
+ * 零 PSRAM，SRAM 3 块 23040B。单画布 + 转置后立即 flush_ready —— 本模式
+ * 【不要】调 bsp_lvgl_port_async_enable（无 wait_cb 职责，调了令牌积压）。
+ * 需 SDO 在线，不在线放弃同步照发（sync_miss 标出）。触摸用默认横屏
+ * 映射（touch_set_portrait(0)，T5 用过竖屏档的话记得切回）。返回 0=生效；
+ * 1=本次上电已按其它模式初始化过（维持原模式）。幂等 */
+uint8_t bsp_lvgl_port_init_colmajor_landscape(void);
+
+/* 当前是否列优先横屏直通模式（1=是） */
+uint8_t bsp_lvgl_port_colmajor_lm_active(void);
+
+/* 列优先横屏模式刷新统计（参数可传 0 跳过）：frames/avg/max_period_us/
+ * sync_miss 同 cm_stats；tr_max_us=单板转置耗时峰值；gap_avg/max_us=块间隙
+ * （上板 flush 返回→本板进入 = LVGL 渲染+调度一块的耗时，判据：与 819µs
+ * DMA 影子赛跑，Σgap ≈ 19xavg 需 < ~800µs 才保得住领先量） */
+void bsp_lvgl_port_colmajor_lm_stats(uint32_t *frames, uint32_t *avg_period_us,
+                                     uint32_t *max_period_us, uint32_t *sync_miss,
+                                     uint32_t *tr_max_us, uint32_t *gap_avg_us,
+                                     uint32_t *gap_max_us);
+
 /* 整帧模式累计下发条带数（诊断：除以 flush 数 = 每帧条带数，320 宽
  * 全屏一帧应为 3 条：102+102+36 行） */
 uint32_t bsp_lvgl_port_strip_cnt(void);

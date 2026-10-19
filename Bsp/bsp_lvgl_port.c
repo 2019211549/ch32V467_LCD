@@ -23,6 +23,7 @@
 #include "bsp_touch.h"
 #include "lvgl.h"
 #include "psg_config.h"     /* PSG_LVGL_DOUBLE_BUF：双画布开关 + PSG_LOG */
+#include "bsp_uart.h"       /* uart_printf：临时诊断直打（不依赖 PSG_LOG 开关） */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
@@ -590,6 +591,247 @@ void bsp_lvgl_port_cm_stats(uint32_t *frames, uint32_t *avg_period_us,
     }
     if (max_period_us != 0) { *max_period_us = s_cm_period_max; }
     if (sync_miss     != 0) { *sync_miss     = s_cm_sync_miss; }
+}
+
+/* ==================== 列优先横屏直通（T6，2026-10-19 方案定稿） ====================
+ * 目标：横屏 320x240 声明下拿回 T5 的物理底座 —— 控件/文字正向 + 列连续
+ * GRAM 竖板 DMA 追扫（~60fps 无撕裂）+ 零 PSRAM。
+ *
+ * 手段 = LVGL 内核补丁（LV_USE_COLMAJOR_RENDER）：PARTIAL 刷新从"按行切
+ * 全宽横条"改成"按列切全高竖条"（x 升序）——条带调度本身与方向无关的
+ * 事实是本方案的支点（buf_area+reshape 按 area 走，画法零改动）。
+ * 于是：LVGL 横屏坐标系里每条脏区 = 16 宽 x 240 高竖条，渲染完得到
+ * 行主序 16x240 画布 → flush_cb 转置成列主序（dst[j*h+y]=src[y*w+j]，
+ * 板证 0x40 下无需 Y 翻转）→ 窗口参数交换（CASET=v 全高、RASET=u 16 列）
+ * → 一笔异步 DMA。双向车道：发板 k（819µs）的同时 CPU 渲染+转置板 k+1
+ * （须 ≤819µs 藏进影子，gap 统计盯这个数）。
+ *
+ * 与 T5 的关键差别：单画布 + flush_ready 在转置后立即给（数据已转移到
+ * dma_buf，不等 LCD）→ LVGL 复用画布不再经过 wait_for_flushing —— 所以
+ * 周期首条的 GSCAN 读之前必须【自排干】上一周期末条在飞 DMA（T5 靠双画布
+ * 的 wait_for_flushing 白拿的这一步，这里 done 计数轮询补上）。
+ * 排干→转置→等回绕→set_window→发 的顺序：转置提前到等待前，回绕检出
+ * 即刻起跑（δ0=0 模型不变）。
+ *
+ * 缓冲 3 块共 23040B：lv 画布 x1 + dma 乒乓 x2。无信号量无 wait_cb
+ * （本模式不要调 bsp_lvgl_port_async_enable —— 它注册的 wait_cb 会空转）。
+ * SDO 不在线则放弃同步照发（可能撕裂，sync_miss 标出，同 T5）。 */
+#define CML_STRIP_W         16u                          /* 竖板宽（板证 1:1 迁移） */
+#define CML_PANEL_H         LCD_NATIVE_W                 /* 横屏板高 = 玻璃短边 240
+                                                          * （不是 LCD_NATIVE_H=320 —— 那是竖屏高） */
+#define CML_GSCAN_CMD       0x45
+#define CML_RD_PRESC        SPI_BaudRatePrescaler_16     /* 板证最快可信读档 */
+#define CML_WRAP_DROP       (-128)
+#define CML_WRAP_TIMEOUT_MS 60u
+#define CML_DRAIN_GUARD     2000000u                     /* 排干轮询上限 ~16ms@300M */
+
+static uint16_t s_cml_lv[CML_STRIP_W * CML_PANEL_H] __attribute__((aligned(4)));
+static uint16_t s_cml_dma[2][CML_STRIP_W * CML_PANEL_H] __attribute__((aligned(4)));
+static uint8_t  s_cml_active;             /* 1 = 列优先横屏模式已生效 */
+static uint8_t  s_cml_cycle_first = 1;    /* 本刷新周期还没做过回绕对齐 */
+static uint8_t  s_cml_pp;                 /* DMA 乒乓索引 */
+static uint8_t  s_cml_inflight;           /* 1 = 有一笔板 DMA 在飞（排干用） */
+static uint32_t s_cml_frames;             /* 完成的刷新周期数 */
+static uint32_t s_cml_sync_miss;          /* 回绕等待超时次数 */
+static uint32_t s_cml_drain_tmo;          /* 排干超时（recover 兜底次数） */
+static uint32_t s_cml_period_max;         /* 周期最大值(µs) */
+static uint32_t s_cml_last_wrap_tick;     /* 上次回绕检出时刻(mcycle) */
+static uint64_t s_cml_period_sum;         /* 周期累计(µs) */
+static uint32_t s_cml_tr_max;             /* 单板转置耗时峰值(µs) */
+static uint32_t s_cml_gap_sum;            /* 块间隙累计(µs)：上板 flush 返回→本板进入 */
+static uint32_t s_cml_gap_cnt;            /* = LVGL 渲染+调度一块的耗时 */
+static uint32_t s_cml_gap_max;
+static uint32_t s_cml_t_prev_ret;         /* 上一板 flush 返回时刻(mcycle) */
+static uint32_t s_cml_dbg_n;              /* 临时诊断：前几板逐段打印池体检，
+                                           * 定位 HardFault(mcause=4 池指针被写歪) 的时序用 */
+
+/* 排干上一周期末条在飞 DMA：done 计数动了=TC 已收尾，总线空闲可读 GSCAN。
+ * 一笔板 DMA 最长 ~819µs，轮询通常几十 µs 内出结果；guard 耗尽走 recover */
+static void cml_drain(void)
+{
+    uint32_t dn0 = 0, dn = 0, guard = CML_DRAIN_GUARD;
+
+    if (s_cml_inflight == 0) { return; }
+    s_cml_inflight = 0;
+
+    bsp_lcd_dma_stats(0, &dn0, 0);
+    while (guard-- != 0u)
+    {
+        bsp_lcd_dma_stats(0, &dn, 0);
+        if (dn != dn0) { return; }
+    }
+    bsp_lcd_dma_recover();       /* 理论到不了（TC 丢失=硬件级异常） */
+    s_cml_drain_tmo++;
+}
+
+/* flush_cb（T6 主流程，方案定稿顺序）：转置 → [周期首条：排干+回绕对齐]
+ * → 交换参数窗口 → 异步 DMA → 转置完即 flush_ready 释放画布 */
+static void cml_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    int32_t  w = area->x2 - area->x1 + 1;   /* 板宽（屏 u 向列数） */
+    int32_t  h = area->y2 - area->y1 + 1;   /* 板高（屏 v 向，横屏=240） */
+    uint16_t *dst = s_cml_dma[s_cml_pp];
+    const uint16_t *src = (const uint16_t *)px_map;
+    uint32_t t0, t1;
+    int32_t  j, y;
+    uint8_t  dbg = (s_cml_dbg_n < 6u) ? 1 : 0;   /* 临时诊断 */
+
+    if (dbg != 0)
+    {
+        lv_mem_monitor_t mon;
+
+        s_cml_dbg_n++;
+        lv_mem_monitor(&mon);
+        uart_printf("cmlD%lu: 入口 area(%d,%d)-(%d,%d) 池=%d free=%lu\r\n",
+                    (unsigned long)(s_cml_dbg_n - 1u),
+                    (int)area->x1, (int)area->y1, (int)area->x2, (int)area->y2,
+                    (int)lv_mem_test(), (unsigned long)mon.free_size);
+    }
+
+    /* 块间隙（非首条才有效：首条间隙含回绕等待，无意义）：上板 flush 返回
+     * → 本板进入 = LVGL 渲染本板 + 调度开销，就是与 819µs DMA 影子赛跑的数 */
+    t1 = cmp_cyc();
+    if (s_cml_cycle_first == 0 && s_cml_t_prev_ret != 0u)
+    {
+        uint32_t gus = cmp_ticks_to_us(t1 - s_cml_t_prev_ret);
+
+        s_cml_gap_sum += gus;
+        s_cml_gap_cnt++;
+        if (gus > s_cml_gap_max) { s_cml_gap_max = gus; }
+    }
+
+    /* 转置（提前到等待前：回绕检出即刻就能起跑）：行主序 [y*w+j] →
+     * 列主序 [j*h+y]，纯转置无 Y 翻转（板证 0x40 映射同向） */
+    t0 = cmp_cyc();
+    for (y = 0; y < h; y++)
+    {
+        for (j = 0; j < w; j++)
+        {
+            dst[j * h + y] = src[y * w + j];
+        }
+    }
+    t1 = cmp_ticks_to_us(cmp_cyc() - t0);
+    if (t1 > s_cml_tr_max) { s_cml_tr_max = t1; }
+
+    if (dbg != 0)
+    {
+        uart_printf("cmlD: 转置后 池=%d\r\n", (int)lv_mem_test());
+    }
+
+    if (s_cml_cycle_first != 0)
+    {
+        uint32_t tw;
+
+        cml_drain();                          /* 总线空闲才可读 GSCAN */
+        tw = cmp_wait_wrap(CML_WRAP_TIMEOUT_MS);
+        if (tw != 0u)
+        {
+            if (s_cml_last_wrap_tick != 0u)   /* 相邻回绕间隔=刷新周期 */
+            {
+                uint32_t us = cmp_ticks_to_us(tw - s_cml_last_wrap_tick);
+
+                s_cml_period_sum += us;
+                if (us > s_cml_period_max) { s_cml_period_max = us; }
+                s_cml_frames++;
+            }
+            s_cml_last_wrap_tick = tw;
+        }
+        else
+        {
+            s_cml_sync_miss++;   /* 无回绕（SDO 不在线？）：放弃对齐照发 */
+        }
+        s_cml_cycle_first = 0;
+    }
+
+    /* 窗口参数交换：CASET=v 全高（area 的 y）、RASET=u 板宽（area 的 x）。
+     * set_window 入口自带在飞 DMA 同步 —— 转置已在它前面，流水不破 */
+    bsp_lcd_set_window((uint16_t)area->y1, (uint16_t)area->x1,
+                       (uint16_t)area->y2, (uint16_t)area->x2);
+
+    if (bsp_lcd_write_pixels_async(dst, (uint32_t)w * (uint32_t)h) == 0)
+    {
+        s_cml_inflight = 1;
+    }
+    /* 拒收兜底（理论到不了：3840 半字恒偶地址）：内部已同步发完，无在飞 */
+
+    s_cml_pp ^= 1u;                          /* 另一块给下一板转置（本块在飞） */
+    s_flush_cnt++;
+    if (lv_display_flush_is_last(disp)) { s_cml_cycle_first = 1; }
+    lv_display_flush_ready(disp);            /* 数据已转移，画布立即复用 */
+    s_cml_t_prev_ret = cmp_cyc();
+}
+
+uint8_t bsp_lvgl_port_init_colmajor_landscape(void)
+{
+    if (s_inited)
+    {
+        /* 幂等：报当前模式（同 init_colmajor 语义） */
+        return (s_cml_active != 0) ? 0 : 1;
+    }
+    s_inited = 1;
+
+    bsp_lcd_init();                          /* GPIO/SPI1/ST7789 初始化（默认竖屏） */
+    bsp_lcd_set_rotation(LCD_ROT_LANDSCAPE); /* 标准横屏初始化序列（MADCTL 0x60）走一遍 */
+    bsp_lcd_set_madctl_raw(0x40);            /* 换列优先地址序；屏上方向不变（板证） */
+
+    lv_init();
+
+    /* DMA 完成中断收尾 + 空回调：完成靠 done 计数轮询（cml_drain /
+     * set_window 内同步）。本模式【不要】调 bsp_lvgl_port_async_enable ——
+     * 单画布下没有 wait_cb 的活，信号量令牌没人取只会积着 */
+    bsp_lcd_dma_async_enable(0);
+
+    /* 横屏声明 320x240：LVGL-x=屏上水平（u/扫描轴），LVGL-y=竖直（v），
+     * 控件/文字天然正向 —— 这正是 T6 相对 T5 的全部意义。宽高取逻辑值
+     * （此时 rotation 状态就是 LANDSCAPE，bsp_lcd_width 报 320） */
+    s_disp = lv_display_create((int32_t)bsp_lcd_width(), (int32_t)bsp_lcd_height());
+    if (s_disp == NULL)
+    {
+        return 1;   /* 同部分刷新档：内存池不够，调用方断言兜底 */
+    }
+
+    lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_flush_cb(s_disp, cml_flush_cb);
+    /* 单画布 + 立即 flush_ready（T6 流水关键）：转置完数据已进 dma_buf，
+     * LVGL 立刻复用画布渲染下一板 —— 发送与渲染的双向车道由此成立 */
+    lv_display_set_buffers(s_disp, s_cml_lv, NULL, sizeof(s_cml_lv),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_colmajor_render(s_disp, true);   /* 内核补丁：按列切竖条 */
+
+    s_cml_active = 1;
+    PSG_LOG("lvgl_port: 列优先横屏直通生效（320x240 声明 MADCTL=0x40 "
+            "板宽=%u列 转置+乒乓DMA GSCAN 回绕对齐）\r\n", (unsigned)CML_STRIP_W);
+    {   /* 临时诊断：init 完成时的单元链快照（收 bug 后删） */
+        extern void dbg_lv_snapshot(char tag);
+        dbg_lv_snapshot('I');
+    }
+    return 0;
+}
+
+uint8_t bsp_lvgl_port_colmajor_lm_active(void)
+{
+    return s_cml_active;
+}
+
+void bsp_lvgl_port_colmajor_lm_stats(uint32_t *frames, uint32_t *avg_period_us,
+                                     uint32_t *max_period_us, uint32_t *sync_miss,
+                                     uint32_t *tr_max_us, uint32_t *gap_avg_us,
+                                     uint32_t *gap_max_us)
+{
+    if (frames        != 0) { *frames        = s_cml_frames; }
+    if (avg_period_us != 0)
+    {
+        *avg_period_us = (s_cml_frames != 0u)
+                       ? (uint32_t)(s_cml_period_sum / s_cml_frames) : 0u;
+    }
+    if (max_period_us != 0) { *max_period_us = s_cml_period_max; }
+    if (sync_miss     != 0) { *sync_miss     = s_cml_sync_miss; }
+    if (tr_max_us     != 0) { *tr_max_us     = s_cml_tr_max; }
+    if (gap_avg_us    != 0)
+    {
+        *gap_avg_us = (s_cml_gap_cnt != 0u) ? (s_cml_gap_sum / s_cml_gap_cnt) : 0u;
+    }
+    if (gap_max_us    != 0) { *gap_max_us    = s_cml_gap_max; }
 }
 
 void bsp_lvgl_port_async_enable(void)

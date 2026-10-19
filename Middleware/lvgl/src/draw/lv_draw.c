@@ -15,10 +15,28 @@
 #include "../core/lv_global.h"
 #include "../core/lv_refr_private.h"
 
+/* 临时诊断（HardFault 定位用，收 bug 后删）：单元链/tlsf 快照 */
+#include "bsp_uart.h"
+
 /*********************
  *      DEFINES
  *********************/
 #define _draw_info LV_GLOBAL_DEFAULT()->draw_info
+
+/* 临时诊断：打印 draw 单元链头 + tlsf 池指针（两者都在 lv_global 里，
+ * 前三轮 HardFault 崩的就是这两个字段的读路径）。对 head 只做一次
+ * 对齐+地址范围校验后的 next 解引用，保证探针自身不炸 */
+void dbg_lv_snapshot(char tag)
+{
+    lv_draw_unit_t * u = _draw_info.unit_head;
+    uart_printf("S%c: head=%p tlsf=%p", tag, (void *)u,
+                (void *)LV_GLOBAL_DEFAULT()->tlsf_state.tlsf);
+    if(((unsigned long)u & 3ul) == 0ul &&
+       (unsigned long)u >= 0x20000000ul && (unsigned long)u < 0x20022000ul) {
+        uart_printf(" next=%p", (void *)u->next);
+    }
+    uart_printf("\r\n");
+}
 
 /**********************
  *      TYPEDEFS
@@ -131,6 +149,15 @@ void lv_draw_finalize_task_creation(lv_layer_t * layer, lv_draw_task_t * t)
     LV_LOG_TRACE("Finalize task %p (type %d)", (void *)t, t->type);
     LV_CHECK_ARG(layer != NULL, return);
     LV_CHECK_ARG(t != NULL, return);
+
+    /* 临时诊断：崩溃点就在本函数的单元链遍历——入口先拍一张（收 bug 后删） */
+    {
+        static uint32_t dbg_snap_n;
+        if(dbg_snap_n < 3u) {
+            dbg_lv_snapshot('F');
+            dbg_snap_n++;
+        }
+    }
 
     LV_PROFILER_DRAW_BEGIN;
     lv_draw_dsc_base_t * base_dsc = t->draw_dsc;

@@ -65,6 +65,13 @@
 
 #endif /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
 
+/* COLMAJOR_RENDER（T6 补丁，2026-10-19）：PARTIAL 刷新改按列切片（x 升序、全高
+ * 竖条），配 Bsp 列优先横屏直通管线（MADCTL=0x40 列连续 GRAM + 竖板 DMA 追扫）。
+ * 0 = lv_refr.c 列分支编译为空，回 stock 行切片。注意这是本工程的 LVGL 补丁：
+ * 重新拷贝 LVGL 源码后需重新打上（lv_refr.c 列分支 + get_max_col、
+ * lv_display_private.h 的 colmajor_render 位、lv_display.h/.c 的 setter/getter） */
+#define LV_USE_COLMAJOR_RENDER 1
+
 /** Header for integer types (stdint) */
 #define LV_STDINT_INCLUDE "stdint.h"
 
