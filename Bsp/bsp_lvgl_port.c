@@ -29,6 +29,8 @@
 #include <string.h>         /* memset：上电清 PSRAM 帧缓冲 */
 #include "bsp_psram.h"      /* 整帧模式的帧缓冲窗口（BSP_PSRAM_WINDOW_BASE） */
 #include "bsp_lcd_scan.h"   /* 竖板追扫模式：staging + GSCAN 同步追扫 */
+#include "ch32v4x7.h"          /* SPI_BaudRatePrescaler_16（GSCAN 读速档） */
+#include "system_ch32v4x7.h"   /* SystemCoreClock：mcycle tick↔µs 换算跟随主频 */
 
 /* 部分刷新画布：按最大逻辑宽 320（横屏）x 24 行 x 2 字节 = 15K。
  * LVGL 按"当前 hor_res"自动折算每块行数：竖屏 240 宽时每块 32 行，
@@ -404,6 +406,192 @@ uint8_t bsp_lvgl_port_slab_active(void)
     return s_sc_active;
 }
 
+/* ==================== 列优先直通模式（T5，2026-10-19 板证定案） ====================
+ * 思路：display 按玻璃原生竖屏 240x320 声明（LVGL 坐标 = 竖屏坐标），
+ * LCD 侧 MADCTL 换成板证 0x40 —— 屏上画面方向不变，但地址轴含义变为
+ * "CASET=屏上竖直方向 v(0..239)、RASET=屏上水平方向 u(0..319，扫描轴)"。
+ * 于是 LVGL 部分刷新的横条带（240 宽 x N 行）物理上就是 "N 列 x 全高"
+ * 的竖板，画布行主序恰好 = 面板列连续序 → flush_cb 原样 set_window(area)
+ * + 一笔异步 DMA：零转置、零拷贝、零 PSRAM（画布即 DMA 源），任意形状
+ * 脏区都成立（窗口跟着 area 走）。
+ *
+ * 撕裂同步（翻色实验第二轮板证参数：T_scan=16747µs、扫描 ~50.1µs/可见列、
+ * 16 列板 DMA 819µs、Δ≈1165µs、背靠背 20 板 ≈16.6ms < 1 帧 → δ0=0 同帧
+ * 干净翻色）：每刷新周期【第一条】flush 前等 GSCAN 回绕（δ0=0），随后
+ * 条带背靠背连发，写前沿沿扫描轴领先并同帧内跑完 = 等效 vsync 页翻转，
+ * 且无 T3 追扫的"整帧量化"等待（2 帧周期 ~30fps）→ 理论 1 帧周期 ~60fps。
+ * 等回绕时总线必然空闲：双画布下 LVGL 调 flush_cb 前已 wait_for_flushing
+ * 排干上一周期末条 DMA（lv_refr.c:1418），GSCAN 读不与流式 DMA 撞车。
+ * SDO 不在线则放弃同步照发（可能撕裂，sync_miss 计数标出）。
+ *
+ * 条带高 16 列：与翻色标定实验同宽（板证数字 1:1 迁移），全屏 320/16=20
+ * 条；画布 2x240x16x2=15K SRAM（与部分刷新档同预算） */
+#define CMP_STRIP_H        16u                          /* 条带=16 列竖板 */
+#define CMP_GSCAN_CMD      0x45
+#define CMP_RD_PRESC       SPI_BaudRatePrescaler_16     /* 板证最快可信读档 ~5µs/次 */
+#define CMP_WRAP_DROP      (-128)                       /* 回绕判据：计数大幅回落 */
+#define CMP_WRAP_TIMEOUT_MS 60u                         /* 回绕等待兜底（1 帧 16.7ms） */
+
+static uint8_t  s_cm_buf1[LCD_NATIVE_W * CMP_STRIP_H * 2u] __attribute__((aligned(4)));
+static uint8_t  s_cm_buf2[LCD_NATIVE_W * CMP_STRIP_H * 2u] __attribute__((aligned(4)));
+static uint8_t  s_cm_active;       /* 1 = 列优先直通模式已生效 */
+static uint8_t  s_cm_cycle_first = 1;   /* 本刷新周期还没做过回绕对齐 */
+static uint32_t s_cm_frames;       /* 完成的刷新周期数（相邻回绕间隔计一帧） */
+static uint32_t s_cm_sync_miss;    /* 回绕等待超时次数（SDO 不在线/读异常） */
+static uint64_t s_cm_period_sum;   /* 周期累计(µs)，除以帧数=avg */
+static uint32_t s_cm_period_max;   /* 周期最大值(µs) */
+static uint32_t s_cm_last_wrap_tick;   /* 上次回绕检出时刻(mcycle)，0=尚无 */
+
+static inline uint32_t cmp_cyc(void)
+{
+    uint32_t v;
+    __asm volatile ("csrr %0, mcycle" : "=r" (v));
+    return v;
+}
+
+static uint32_t cmp_ticks_to_us(uint32_t t)
+{
+    return (uint32_t)(((uint64_t)t * 1000000ull) / SystemCoreClock);
+}
+
+/* GSCAN 读当前扫描行（colmajor/flipcal 同款）：事务中点作时间戳 */
+static uint16_t cmp_gscan(uint32_t *t_mid)
+{
+    uint8_t  b[2];
+    uint32_t t0 = cmp_cyc();
+
+    (void)bsp_lcd_read_reg_p(CMP_GSCAN_CMD, 1, b, 2, CMP_RD_PRESC);
+    *t_mid = t0 + ((cmp_cyc() - t0) >> 1);
+    return (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+}
+
+/* 等回绕：返回检出时刻(tick)，超时返回 0。检出精度 ~5µs */
+static uint32_t cmp_wait_wrap(uint32_t timeout_ms)
+{
+    uint32_t t0 = cmp_cyc();
+    uint32_t lim = timeout_ms * (SystemCoreClock / 1000u);
+    uint32_t t;
+    uint16_t prev = cmp_gscan(&t);
+
+    for (;;)
+    {
+        uint16_t v = cmp_gscan(&t);
+
+        if ((int32_t)v - (int32_t)prev <= CMP_WRAP_DROP) { return t; }
+        prev = v;
+        if ((cmp_cyc() - t0) > lim) { return 0; }
+    }
+}
+
+/* flush_cb：area 原样即窗口（LVGL-x=CASET=v 全跨或部分，LVGL-y=RASET=u）。
+ * 周期首条先做回绕对齐（阻塞 0~16.7ms，与 T3 frame_send 同量级） */
+static void cm_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    if (s_cm_cycle_first != 0)
+    {
+        uint32_t tw = cmp_wait_wrap(CMP_WRAP_TIMEOUT_MS);
+
+        if (tw != 0u)
+        {
+            if (s_cm_last_wrap_tick != 0u)     /* 相邻回绕间隔=刷新周期 */
+            {
+                uint32_t us = cmp_ticks_to_us(tw - s_cm_last_wrap_tick);
+
+                s_cm_period_sum += us;
+                if (us > s_cm_period_max) { s_cm_period_max = us; }
+                s_cm_frames++;
+            }
+            s_cm_last_wrap_tick = tw;
+        }
+        else
+        {
+            s_cm_sync_miss++;   /* 无回绕（SDO 不在线？）：放弃对齐照发 */
+        }
+        s_cm_cycle_first = 0;
+    }
+
+    bsp_lcd_set_window((uint16_t)area->x1, (uint16_t)area->y1,
+                       (uint16_t)area->x2, (uint16_t)area->y2);
+
+    if (bsp_lcd_write_pixels_async((const uint16_t *)px_map,
+        (uint32_t)(area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1)) == 0)
+    {
+        s_flush_cnt++;
+        if (lv_display_flush_is_last(disp)) { s_cm_cycle_first = 1; }
+        return;   /* 异步正常路径：完成通知由 wait_cb 机制给出（同 async 档） */
+    }
+
+    /* 拒收兜底（理论到不了：条带 3840 半字、地址恒偶）：同步已发完，
+     * 排空陈旧令牌防下一条提前放行（同部分刷新档的防御） */
+    while (xSemaphoreTake(s_flush_sem, 0) == pdTRUE) { }
+
+    s_flush_cnt++;
+    if (lv_display_flush_is_last(disp)) { s_cm_cycle_first = 1; }
+    lv_display_flush_ready(disp);
+}
+
+uint8_t bsp_lvgl_port_init_colmajor(void)
+{
+    if (s_inited)
+    {
+        /* 幂等：报当前模式（同 init_fullframe/init_slab 语义） */
+        return (s_cm_active != 0) ? 0 : 1;
+    }
+    s_inited = 1;
+
+    bsp_lcd_init();                    /* GPIO/SPI1/ST7789 初始化（默认竖屏） */
+    bsp_lcd_set_rotation(LCD_ROT_LANDSCAPE);   /* 标准初始化序列（MADCTL 0x60）走一遍 */
+    bsp_lcd_set_madctl_raw(0x40);      /* 换列优先地址序；屏上方向不变（板证） */
+
+    lv_init();
+
+    /* 异步三件套在本模式 init 内一步到位（flush 恒异步，无同步档需求；
+     * 之后调 async_enable 会因 s_flush_sem 非空幂等跳过，无害） */
+    s_flush_sem = xSemaphoreCreateBinaryStatic(&s_flush_sem_obj);
+    bsp_lcd_dma_async_enable(dma_give_from_isr);
+
+    /* 按玻璃原生竖屏建显示屏：LVGL-x=CASET=v（屏上竖直），LVGL-y=RASET=u
+     * （屏上水平/扫描轴）。宽高用固定玻璃尺寸（不查 bsp_lcd_width ——
+     * 内部 rotation 状态还是 LANDSCAPE，会报 320x240） */
+    s_disp = lv_display_create(LCD_NATIVE_W, LCD_NATIVE_H);
+    if (s_disp == NULL)
+    {
+        return 1;   /* 同部分刷新档：内存池不够，调用方断言兜底 */
+    }
+
+    lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_flush_cb(s_disp, cm_flush_cb);
+    lv_display_set_flush_wait_cb(s_disp, flush_wait_cb);
+    /* 双画布（T5 的流水关键：画条带 N+1 ∥ 发条带 N；LVGL 复用画布前经
+     * wait_cb 排干在飞 DMA —— 也是周期首条 GSCAN 读的安全前提） */
+    lv_display_set_buffers(s_disp, s_cm_buf1, s_cm_buf2, sizeof(s_cm_buf1),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    s_async_flush = 1;    /* 共用标志：表明异步档已开（语义一致） */
+    s_cm_active = 1;
+    PSG_LOG("lvgl_port: 列优先直通模式生效（240x320 声明 MADCTL=0x40 "
+            "条带=%u列 GSCAN 回绕对齐）\r\n", (unsigned)CMP_STRIP_H);
+    return 0;
+}
+
+uint8_t bsp_lvgl_port_cm_active(void)
+{
+    return s_cm_active;
+}
+
+void bsp_lvgl_port_cm_stats(uint32_t *frames, uint32_t *avg_period_us,
+                            uint32_t *max_period_us, uint32_t *sync_miss)
+{
+    if (frames        != 0) { *frames        = s_cm_frames; }
+    if (avg_period_us != 0)
+    {
+        *avg_period_us = (s_cm_frames != 0u)
+                       ? (uint32_t)(s_cm_period_sum / s_cm_frames) : 0u;
+    }
+    if (max_period_us != 0) { *max_period_us = s_cm_period_max; }
+    if (sync_miss     != 0) { *sync_miss     = s_cm_sync_miss; }
+}
+
 void bsp_lvgl_port_async_enable(void)
 {
     if (s_disp == NULL || s_flush_sem != NULL) {
@@ -438,6 +626,7 @@ uint32_t bsp_lvgl_port_flush_cnt(void)
  * 四角实测：TL 玻璃(239,25)→(25,0)  BR 玻璃(0,302)→(302,239)（指腹偏移内）
  * 只配了横屏（当前产品形态）；换方向要连映射一起改，别只转屏 */
 static uint8_t  s_touch_inited;    /* 幂等保护，与 s_inited 同款 */
+static uint8_t  s_touch_portrait; /* 1 = T5 列优先竖屏声明：indev 坐标换轴 */
 static uint16_t s_last_gx, s_last_gy;      /* read_cb 最近一次成功读数（日志用） */
 static uint16_t s_map_u, s_map_v;          /* 对应的映射后逻辑坐标 */
 static uint8_t  s_last_pressed;            /* 最近一次按下状态 */
@@ -483,10 +672,26 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         s_touch_err++;
     }
 
-    data->point.x = s_map_u;
-    data->point.y = s_map_v;
+    if (s_touch_portrait != 0)
+    {
+        /* T5 列优先模式：display 按竖屏声明 → LVGL-x=屏v=239-gx、
+         * LVGL-y=屏u=gy。映射②算出的 (u,v) 直接换轴即可，方向正确性
+         * 继承横屏板证（在 touch_set_portrait(1) 后、任意时刻可切） */
+        data->point.x = s_map_v;
+        data->point.y = s_map_u;
+    }
+    else
+    {
+        data->point.x = s_map_u;
+        data->point.y = s_map_v;
+    }
     data->state = (s_last_pressed != 0) ? LV_INDEV_STATE_PRESSED
                                         : LV_INDEV_STATE_RELEASED;
+}
+
+void bsp_lvgl_port_touch_set_portrait(uint8_t en)
+{
+    s_touch_portrait = (en != 0) ? 1 : 0;
 }
 
 uint8_t bsp_lvgl_port_touch_init(void)

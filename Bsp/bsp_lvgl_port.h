@@ -51,6 +51,28 @@ uint8_t bsp_lvgl_port_init_slab(uint8_t rotation);
 /* 当前是否竖板追扫模式（1=是；回退部分刷新后为 0） */
 uint8_t bsp_lvgl_port_slab_active(void);
 
+/* 列优先直通模式（T5，代替 bsp_lvgl_port_init 使用，无参数——方向固定）：
+ * display 按玻璃原生竖屏 240x320 声明 + MADCTL=0x40（板证列优先地址序，
+ * CASET=屏竖直 v / RASET=屏水平 u 扫描轴），LVGL 部分刷新条带（240x16）
+ * 物理上就是 16 列 x 全高竖板 —— flush_cb 原样窗口 + 一笔异步 DMA，
+ * 零转置/零拷贝/零 PSRAM（画布即 DMA 源）。撕裂同步：每刷新周期首条
+ * flush 前 GSCAN 回绕对齐（δ0=0）+ 条带背靠背（板证 20 板 ≈16.6ms < 1
+ * 帧 = 同帧干净翻色）→ 等效 vsync 页翻转且无整帧量化等待（~60fps 上限，
+ * 对比 T3 追扫的 2 帧周期 ~30fps）。异步三件套在 init 内一步到位（之后
+ * 调 async_enable 幂等无害）。需 SDO 在线（GSCAN 读），不在线则放弃
+ * 同步照发（可能撕裂，sync_miss 计数标出）。返回 0 = 生效；1 = 本次
+ * 上电已按其它模式初始化过（维持原模式）。幂等 */
+uint8_t bsp_lvgl_port_init_colmajor(void);
+
+/* 当前是否列优先直通模式（1=是） */
+uint8_t bsp_lvgl_port_cm_active(void);
+
+/* 列优先模式刷新统计（参数可传 0 跳过）：frames=完成的刷新周期数，
+ * avg/max_period_us=相邻回绕对齐的间隔（= 实际帧周期，60fps 应 ~16.7ms），
+ * sync_miss=回绕等待超时数（SDO 不在线/读异常） */
+void bsp_lvgl_port_cm_stats(uint32_t *frames, uint32_t *avg_period_us,
+                            uint32_t *max_period_us, uint32_t *sync_miss);
+
 /* 整帧模式累计下发条带数（诊断：除以 flush 数 = 每帧条带数，320 宽
  * 全屏一帧应为 3 条：102+102+36 行） */
 uint32_t bsp_lvgl_port_strip_cnt(void);
@@ -74,5 +96,10 @@ void bsp_lvgl_port_touch_map(uint16_t gx, uint16_t gy, uint16_t *u, uint16_t *v)
  * 参数可传 0 跳过 */
 void bsp_lvgl_port_touch_dbg(uint16_t *gx, uint16_t *gy, uint16_t *u,
                              uint16_t *v, uint8_t *pressed, uint32_t *err);
+
+/* 触摸 indev 坐标轴切换（T5 列优先模式配套）：en=1 时 read_cb 上报
+ * 竖屏坐标（LVGL-x=屏v=239-gx、LVGL-y=屏u=gy，由板证横屏映射②换轴）；
+ * 默认 0=横屏坐标 (u,v)。touch_init 前后任意时刻可调 */
+void bsp_lvgl_port_touch_set_portrait(uint8_t en);
 
 #endif /* BSP_LVGL_PORT_H */

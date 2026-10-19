@@ -103,7 +103,15 @@
  * 裁剪梯（δ0=0）pace {T/20+8, T/20, 背靠背}——线右移不消失=扫描快于
  * DMA 极限、同帧不可达；线消失=δ0=0 同帧翻色成立。每档 4s。
  * 独立：不碰 PSRAM/LVGL */
-#define PSG_TEST_LCD_COLMAJOR   1
+#define PSG_TEST_LCD_COLMAJOR   0
+
+/* T5 列优先直通滑动（硬件在环，需 SDO 接好）：列优先 GRAM 底座 +
+ * LVGL 竖屏 240x320 声明 + 双画布 16 列条带直接 DMA（零转置/零 PSRAM）
+ * + 每周期首条 GSCAN 回绕对齐（δ0=0 同帧翻色）。UI=一个 screen+3 容器
+ * 竖排 snap 翻页（竖屏坐标，屏上观感左右滑）。3s 自动演示，8s judge
+ * 判定行（含 cm 帧周期/ sync_miss），之后手滑与 T3 对比手感/A-B 结论。
+ * 与 T3/T4/BSP_TOUCH 互斥 */
+#define PSG_TEST_T5_COLMAJOR_SWIPE 1
 
 /* 后续模块的开关在这里加，例如：
  *   #define PSG_TEST_ALG_FILTER  1
@@ -126,6 +134,7 @@
 #define PSG_TEST_LCD_GSCAN      0
 #define PSG_TEST_LCD_FLIPCAL    0
 #define PSG_TEST_LCD_COLMAJOR   0
+#define PSG_TEST_T5_COLMAJOR_SWIPE 0
 
 #endif
 #endif /* TEST_CONFIG_H */
