@@ -214,6 +214,17 @@ void bsp_lcd_set_rotation(uint8_t rotation)
     lcd_write_data1(rot_madctl[rotation]);
 }
 
+/* 直写 MADCTL(0x36) 任意值（教学/实验用，test_lcd_colmajor 的列优先实验）。
+ * set_rotation 只能从 rot_madctl[4] 四个常用方向里选；本接口允许任意位组合
+ * （如 MV=0 族的镜像变体）。不动 lcd_rotation 变量——逻辑宽高、之后
+ * set_rotation 恢复常用方向都不受影响。用完记得 set_rotation 复位 */
+void bsp_lcd_set_madctl_raw(uint8_t m)
+{
+    lcd_dma_sync();                     /* §11 入口防御：等 DMA 像素流收尾再动总线 */
+    lcd_write_cmd(CMD_MADCTL);
+    lcd_write_data1(m);
+}
+
 uint16_t bsp_lcd_width(void)
 {
     return (lcd_rotation & 1) ? LCD_NATIVE_H : LCD_NATIVE_W;

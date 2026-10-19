@@ -72,6 +72,11 @@ void bsp_lcd_init(void);
  * 横屏时逻辑宽高变为 320x240 —— 轴交换由控制器完成，调用方无感知 */
 void bsp_lcd_set_rotation(uint8_t rotation);
 
+/* 直写 MADCTL(0x36) 任意值（实验用）：与 rot_madctl[] 四方向之外的位组合
+ * （如 MV=0 族的镜像变体）做 GRAM 写入顺序实验。不改变 lcd_rotation——
+ * 逻辑宽高仍按原方向；实验完用 set_rotation 复位。见 test_lcd_colmajor.c */
+void bsp_lcd_set_madctl_raw(uint8_t m);
+
 /* 当前方向的逻辑宽/高（竖屏 240x320，横屏 320x240） */
 uint16_t bsp_lcd_width(void);
 uint16_t bsp_lcd_height(void);

@@ -31,6 +31,7 @@ void test_bsp_touch(void);
 void test_t3_swipe(void);
 void test_t4_fullframe_swipe(void);
 void test_te_explore(void);
+void test_lcd_colmajor(void);
 
 /* 跑一个用例并打印结果（失败计数没涨就算通过） */
 #define TEST_RUN(fn)                                                  \
@@ -94,6 +95,12 @@ int test_runner_run(void)
 #if PSG_TEST_TE_EXPLORE
     /* 探索用例：TE 命令打进去、RDDST 状态读回来（无 TE 引脚的替代观察口） */
     TEST_RUN(test_te_explore);
+#endif
+#if PSG_TEST_LCD_COLMAJOR
+    /* LCD 深入学习 1（独立用例，只依赖屏）：横屏 + 单窗口列优先写 GRAM
+     * 实验——MADCTL 候选梯定案 + 16x240 竖板单 DMA 收官演示，~50s 需
+     * 人眼看屏对照阶段 A 判方向 */
+    TEST_RUN(test_lcd_colmajor);
 #endif
 
     uart_printf("===== %lu passed, %lu failed =====\r\n\r\n",

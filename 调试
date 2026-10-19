@@ -1,58 +1,36 @@
-===== PSG unit tests =====
-[RUN ] test_sanity
-[ OK ] test_sanity
-[RUN ] test_bsp_psram
-bsp_psram: MR0写后回读 MR0=1c MR4=e0 MR8=05 (期望 1c/e0/00)
-bsp_psram: MR终态 MR0=1c MR4=e0 MR8=05
-bsp_psram: init OK (4MB @0x80000000, 300M档)
-psram: init OK（EVT序列, trc=0x14, 300M档+SYSCLK300M）
-psram: 区间扫描（起始64KB 中部8KB 尾部8KB）
-psram:   起始 64KB: 失配 0
-psram:   中部 8KB: 失配 0
-psram:   尾部 8KB: 失配 0
-psram: 地址线别名自检（全片 15 点）: 失配 0
-psram: 64KB 写 42MB/s 读 41MB/s（AN参考 写~130 读~111）
-psram: 结论 PASS —— 4MB 数据/地址线全对，PSRAM 可用
-[ OK ] test_bsp_psram
-[RUN ] test_lcd_gscan
-gscan: P0 RDDID(3B)=40 c0 d9 RDDST=40 29 92 00
-gscan: P1 应答 前8值 0000 0080 008a 0095 009f 0000 0008 0013 不同值30 FF=0
-gscan: P1 dummy对照 d=1[001d..006e] d=0[0000..ff00]（板证 d=0 高8位=哑元字节0xff/不定→量程错位，d=1 才是真行号）
-gscan: P2 锯齿 回绕×8 量程[0000..00a6] T_scan=16741us(59.7Hz) min/max=16734/16758
-gscan: P4 斜率 回归=10.28 反推=9.91 计数/ms 偏差3% 段数8(段间散布 10278..10283) 小回落1
-gscan: P3 频率梯（对照 /128 的 T_scan=16741us）
-gscan:   /128 单次avg 23us(min 23 max 23) ≈43kHz | T=16742us 回绕4 异常0 偏差0% 可信
-gscan:   /64 单次avg 12us(min 12 max 12) ≈83kHz | T=16745us 回绕4 异常0 偏差0% 可信
-gscan:   /32 单次avg 7us(min 7 max 7) ≈142kHz | T=16743us 回绕4 异常0 偏差0% 可信
-gscan:   /16 单次avg 5us(min 5 max 5) ≈200kHz | T=16746us 回绕4 异常0 偏差0% 可信
-gscan: P3 最快可信档 = /16
-gscan: P2b 漂移 0.5s后 T=16750us 变化0.0%
-gscan: P5 MADCTL=0x60(MV|MX,ML=0) → 扫描轴=玻璃Y(0..319)=横屏逻辑U(左→右)，逻辑V=239-玻璃X
-gscan: P5 待板验：ML位影响/GSCAN含porch行?/回绕点=帧头?（下阶段回绕时刻翻色人工标定）
-gscan: 结论 单位=疑似2行/计数(量程166 ≈ (320+porch)/2) T_scan=16741us —— 周期/量程已实测，映射待翻色标定
-[ OK ] test_lcd_gscan
-[RUN ] test_lcd_flipcal
-flipcal: 预备 T_scan=16747us T_fill=16438us(10条带) DMA start/done/err=20/20/0 屏320x240(横屏)
-flipcal: === 阶段A 回绕对齐连续翻色 4s（24行条带DMA路径）===
-flipcal: 看：红蓝交替，预期每帧整屏干净变色、无竖直分界线；
-flipcal:       若有固定位置的分界线，记下距左边缘像素数(=相位偏移)
-flipcal: 阶段A 翻转238次 检出→动笔avg=2us 整屏写avg=16438us 超时0 DMA超时0
-flipcal: === 阶段B δ阶梯（每档~0.6s 红蓝连翻）===
-flipcal: 看：竖直分界线应随档位单调移动；每档记"距左像素数"
-flipcal:       （左/中/右/无 也行）；全程无分界线同样如实记
-flipcal: --- 档0 δ=16.43ms ---
-flipcal: --- 档1 δ=16.45ms ---
-flipcal: --- 档2 δ=16.47ms ---
-flipcal: --- 档3 δ=16.49ms ---
-flipcal: --- 档4 δ=16.51ms ---
-flipcal: --- 档5 δ=16.53ms ---
-flipcal: --- 档6 δ=16.55ms ---
-flipcal: --- 档7 δ=16.57ms ---
-flipcal: --- 档8 δ=16.59ms ---
-flipcal: 阶段B 完。把每档分界线位置（含"无"）发回，
-flipcal:       由 δ-位置折线反解 线周期/回绕相位/2行每计数
-[ OK ] test_lcd_flipcal
-[RUN ] test_t3_swipe
-test_t3_swipe: UI+judge 已建，3s 自动演示，8s 判定行，之后随便手滑
-[ OK ] test_t3_swipe
-===== 26 passed, 0 failed =====
+只设置一次 16 列窗口，再让 DMA 发送列优先数据
+
+这是你最希望实现的：
+
+设置窗口 X=0～15，Y=0～239
+
+一次DMA：
+  先发第0列240像素
+  再发第1列240像素
+  ...
+  最后发第15列240像素
+
+在当前 MADCTL=0x60 的自动寻址方式下，不能仅仅把 SRAM 数据改成列优先排列，就达到这个效果。
+
+原因是 DMA 只是连续发送 RGB565 像素，不会告诉 ST7789“这个像素属于第几列”。
+
+假设 DMA 发来：
+
+P(0,0)
+P(0,1)
+P(0,2)
+...
+
+但 ST7789 的地址计数器仍按逻辑行优先推进：
+
+写到 (0,0)
+写到 (1,0)
+写到 (2,0)
+...
+
+那么图像内容就会错位。
+
+ST7789P3 手册的 RAM 地址组织图，也明确展示了不同 MV/MX/MY 组合下，输入数据与内部 GRAM 地址之间的对应关系。
+LaskaKit
+
+因此，在当前地址映射下，一个 16 列矩形窗口并没有独立的“切换为逻辑列优先填充”选项。
